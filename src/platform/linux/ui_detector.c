@@ -86,14 +86,66 @@ static struct ui_detection_result *legacy_atspi_detect_ui_elements(void)
 	return result;
 }
 
+static int role_is_window_root(const char *role)
+{
+	static const char *root_roles[] = {
+		"application", "frame", "window", "dialog", "panel", NULL,
+	};
+
+	if (!role)
+		return 0;
+	for (size_t i = 0; root_roles[i]; i++) {
+		if (strcasecmp(role, root_roles[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int atspi_result_is_root_only(const struct ui_detection_result *result)
+{
+	const struct ui_element *element;
+	long long area;
+
+	if (!result || result->error != 0 || result->count != 1 ||
+	    !result->elements)
+		return 0;
+
+	element = &result->elements[0];
+	area = (long long)element->w * (long long)element->h;
+
+	/*
+	 * Chromium can register only its top-level frame while renderer
+	 * accessibility remains disabled. That frame is not a useful hint target.
+	 */
+	return role_is_window_root(element->role) || area >= 500000;
+}
+
 static struct ui_detection_result *atspi_detect_ui_elements(void)
 {
 #ifdef WARPD_X
+	struct ui_detection_result *result;
+
 	/*
 	 * i3/Chromium-family applications often omit ATSPI_STATE_ACTIVE. Match the
 	 * X11 _NET_ACTIVE_WINDOW to AT-SPI by PID, title, WM_CLASS and geometry.
 	 */
-	return atspi_x11_detect_ui_elements();
+	result = atspi_x11_detect_ui_elements();
+	if (atspi_result_is_root_only(result)) {
+		const struct ui_element *element = &result->elements[0];
+
+		fprintf(
+		    stderr,
+		    "AT-SPI: rejecting root-only result role='%s' size=%dx%d; renderer accessibility tree is not available\n",
+		    element->role ? element->role : "",
+		    element->w,
+		    element->h);
+		result->error = -4;
+		snprintf(
+		    result->error_msg,
+		    sizeof(result->error_msg),
+		    "Only the top-level application window was exposed");
+	}
+	return result;
 #else
 	return legacy_atspi_detect_ui_elements();
 #endif
