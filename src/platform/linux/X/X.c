@@ -6,6 +6,8 @@
 
 #include "X.h"
 
+#include <stdlib.h>
+
 Display *dpy = NULL;
 
 /* UI element detector functions (implemented in ui_detector.c) */
@@ -17,42 +19,93 @@ extern void atspi_cleanup(void);
 
 static void x_send_paste(void);
 
+static char *read_pipe_text(FILE *fp)
+{
+	size_t capacity = 4096;
+	size_t length = 0;
+	char *buffer = malloc(capacity);
+
+	if (!buffer)
+		return NULL;
+
+	while (1) {
+		size_t available;
+		size_t nr;
+
+		if (capacity - length < 2048) {
+			size_t new_capacity = capacity * 2;
+			char *new_buffer = realloc(buffer, new_capacity);
+
+			if (!new_buffer) {
+				free(buffer);
+				return NULL;
+			}
+
+			buffer = new_buffer;
+			capacity = new_capacity;
+		}
+
+		available = capacity - length - 1;
+		nr = fread(buffer + length, 1, available, fp);
+		length += nr;
+
+		if (nr == 0) {
+			if (ferror(fp)) {
+				free(buffer);
+				return NULL;
+			}
+			break;
+		}
+	}
+
+	buffer[length] = '\0';
+	return buffer;
+}
+
 static int x_insert_text_mode(screen_t scr)
 {
+	FILE *fp;
+	char *text_buffer;
+	int status;
+
 	x_screen_clear(scr);
 	x_commit();
-	
-	FILE *fp = popen("zenity --entry --title='Insert Text' --text='Type text and press OK:'", "r");
+
+	fp = popen(
+	    "zenity --entry --title='Edit Text' --text='Edit text and press OK:'",
+	    "r");
 	if (!fp) {
-		fprintf(stderr, "ERROR: zenity could not be started.\n");
+		fprintf(stderr, "ERROR: text editor could not be started.\n");
 		return 0;
 	}
-	
-	char text_buffer[1024] = {0};
-	if (fgets(text_buffer, sizeof(text_buffer), fp) != NULL) {
-		size_t len = strlen(text_buffer);
-		if (len > 0 && text_buffer[len-1] == '\n') {
-			text_buffer[len-1] = '\0';
-		}
-		
-		int status = pclose(fp);
-		
-		if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && text_buffer[0] != '\0') {
-			FILE *clip = popen("xclip -selection clipboard 2>/dev/null || xsel --clipboard --input 2>/dev/null", "w");
-			if (clip) {
-				fputs(text_buffer, clip);
-				pclose(clip);
-				usleep(100000);
-				x_send_paste();
-				return 1;
-			} else {
-				fprintf(stderr, "ERROR: xclip/xsel not found. Install: sudo apt install xclip\n");
-			}
-		}
-	} else {
-		pclose(fp);
+
+	text_buffer = read_pipe_text(fp);
+	status = pclose(fp);
+
+	if (!text_buffer) {
+		fprintf(stderr, "ERROR: could not read text editor output.\n");
+		return 0;
 	}
-	
+
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && text_buffer[0] != '\0') {
+		FILE *clip = popen(
+		    "xclip -selection clipboard -in 2>/dev/null || "
+		    "xsel --clipboard --input 2>/dev/null",
+		    "w");
+
+		if (clip) {
+			fwrite(text_buffer, 1, strlen(text_buffer), clip);
+			pclose(clip);
+			free(text_buffer);
+			usleep(100000);
+			x_send_paste();
+			return 1;
+		}
+
+		fprintf(stderr, "ERROR: xclip/xsel could not be started.\n");
+	}
+
+	free(text_buffer);
 	return 0;
 }
 
@@ -148,7 +201,7 @@ static void set_opacity(Display *dpy, Window w, uint8_t _opacity)
 	unsigned int opacity =
 	    (unsigned int)(((double)_opacity / 255) * (double)0xffffffff);
 
-	XChangeProperty(dpy, w, OPACITY_ATOM, XA_CARDINAL, 32, PropModeReplace,
+	XChangeProperty(dpy, w, OPACITY_ATOM, 32, PropModeReplace,
 			(unsigned char *)&opacity, 1L);
 }
 
@@ -262,7 +315,7 @@ void x_init(struct platform *platform)
 		fprintf(stderr, "Could not connect to X server\n");
 		exit(-1);
 	}
-	
+
 	/* Register cleanup function to be called on exit */
 	atexit(atspi_cleanup);
 
@@ -297,10 +350,10 @@ void x_init(struct platform *platform)
 	/* UI element detection for smart hint mode */
 	platform->detect_ui_elements = linux_detect_ui_elements;
 	platform->free_ui_elements = linux_free_ui_elements;
-	
+
 	/* Insert text mode */
 	platform->insert_text_mode = x_insert_text_mode;
-	
+
 	/* Paste key (copy already exists as x_copy_selection) */
 	platform->send_paste = x_send_paste;
 }
