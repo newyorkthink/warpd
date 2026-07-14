@@ -207,18 +207,13 @@ static void set_opacity(Display *dpy, Window w, uint8_t _opacity)
 
 void x_copy_selection()
 {
-	XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Control_L), True,
-			  CurrentTime);
-	XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Insert), True,
-			  CurrentTime);
-
-	XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Control_L), False,
-			  CurrentTime);
-	XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Insert), False,
-			  CurrentTime);
-	XSync(dpy, False);
-
-	system("xclip -o|xclip -selection CLIPBOARD");
+	/*
+	 * The selected text is already owned by X11 PRIMARY after drag mode.
+	 * Copy it as UTF-8 without injecting Ctrl+Insert into the focused client.
+	 */
+	system(
+	    "xclip -selection primary -out -target UTF8_STRING 2>/dev/null | "
+	    "xclip -selection clipboard -in 2>/dev/null");
 }
 
 void x_scroll(int direction)
