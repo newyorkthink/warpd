@@ -49,6 +49,7 @@ jobs:
             libatspi2.0-dev \
             libdbus-1-dev \
             libglib2.0-dev \
+            libglib2.0-bin \
             libopencv-dev \
             zenity \
             xclip
@@ -60,6 +61,28 @@ jobs:
           sudo mkdir -p /usr/lib/glib-2.0 /usr/lib/dbus-1.0
           sudo ln -sfn "/usr/lib/${multiarch}/glib-2.0/include" /usr/lib/glib-2.0/include
           sudo ln -sfn "/usr/lib/${multiarch}/dbus-1.0/include" /usr/lib/dbus-1.0/include
+
+      - name: Fix insert mode for AppImage runtime
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/platform/linux/X.c")
+          source = path.read_text()
+
+          copy_sequence = "\tx_copy_selection();\n\tusleep(50000);\n\t\n"
+          if copy_sequence not in source:
+              raise SystemExit("insert mode copy sequence was not found")
+          source = source.replace(copy_sequence, "", 1)
+
+          hidden_zenity = "FILE *fp = popen(\"zenity --entry --title='Insert Text' --text='Type text and press OK:' 2>/dev/null\", \"r\");"
+          visible_zenity = "FILE *fp = popen(\"zenity --entry --title='Insert Text' --text='Type text and press OK:'\", \"r\");"
+          if hidden_zenity not in source:
+              raise SystemExit("Zenity command was not found")
+          source = source.replace(hidden_zenity, visible_zenity, 1)
+
+          path.write_text(source)
+          PY
 
       - name: Build warpd with OpenCV
         run: |
@@ -86,19 +109,27 @@ jobs:
           mkdir -p \
             AppDir/usr/bin \
             AppDir/usr/share/man/man1 \
+            AppDir/usr/share/glib-2.0/schemas \
             AppDir/apprun-hooks
 
           install -m755 "$WARPD_BIN" AppDir/usr/bin/warpd
           install -m755 "$(command -v zenity)" AppDir/usr/bin/zenity
           install -m755 "$(command -v xclip)" AppDir/usr/bin/xclip
 
+          test -d /usr/share/zenity
+          cp -a /usr/share/zenity AppDir/usr/share/
+          cp -a /usr/share/glib-2.0/schemas/. AppDir/usr/share/glib-2.0/schemas/
+          glib-compile-schemas AppDir/usr/share/glib-2.0/schemas
+
           if [ -f files/warpd.1.gz ]; then
             install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
           fi
 
-          # Make warpd's popen/system calls resolve the bundled zenity and xclip first.
+          # Make warpd's popen/system calls resolve the bundled tools and data first.
           cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF'
           export PATH="$this_dir/usr/bin:${PATH:-/usr/bin:/bin}"
+          export XDG_DATA_DIRS="$this_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="$this_dir/usr/share/glib-2.0/schemas"
           EOF
 
           cat > warpd.desktop <<'EOF'
@@ -157,6 +188,8 @@ jobs:
           test -x squashfs-root/usr/bin/zenity
           test -x squashfs-root/usr/bin/xclip
           test -f squashfs-root/apprun-hooks/00-bundled-tools.sh
+          test -d squashfs-root/usr/share/zenity
+          test -f squashfs-root/usr/share/glib-2.0/schemas/gschemas.compiled
 
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
@@ -189,7 +222,7 @@ jobs:
         run: |
           tag="appimage"
           title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, Zenity and xclip runtime support."
+          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, complete Zenity runtime data and xclip support."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
