@@ -161,8 +161,15 @@ jobs:
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
 
-          squashfs-root/usr/bin/zenity --version
-          squashfs-root/usr/bin/xclip -version
+          # GitHub Actions has no graphical DISPLAY. Verify linkage instead of
+          # launching Zenity, which would fail with "cannot open display".
+          for executable in warpd zenity xclip; do
+            ldd "squashfs-root/usr/bin/$executable" | tee "${executable}-bundled-ldd.txt"
+            if grep -q 'not found' "${executable}-bundled-ldd.txt"; then
+              echo "Missing bundled library for $executable" >&2
+              exit 1
+            fi
+          done
 
           file "$APPIMAGE_PATH"
           du -h "$APPIMAGE_PATH"
