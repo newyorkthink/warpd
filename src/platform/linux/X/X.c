@@ -19,15 +19,12 @@ static void x_send_paste(void);
 
 static int x_insert_text_mode(screen_t scr)
 {
-	x_copy_selection();
-	usleep(50000);
-	
 	x_screen_clear(scr);
 	x_commit();
 	
-	FILE *fp = popen("zenity --entry --title='Insert Text' --text='Type text and press OK:' 2>/dev/null", "r");
+	FILE *fp = popen("zenity --entry --title='Insert Text' --text='Type text and press OK:'", "r");
 	if (!fp) {
-		fprintf(stderr, "ERROR: zenity not found. Install: sudo apt install zenity\n");
+		fprintf(stderr, "ERROR: zenity could not be started.\n");
 		return 0;
 	}
 	
@@ -113,7 +110,6 @@ uint32_t parse_xcolor(const char *s, uint8_t *opacity)
 	XColor col;
 
 	uint8_t r, g, b, a;
-
 	hex_to_rgba(s, &r, &g, &b, &a);
 
 	if (opacity)
