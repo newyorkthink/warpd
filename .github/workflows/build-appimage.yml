@@ -67,7 +67,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("src/platform/linux/X.c")
+          path = Path("src/platform/linux/X/X.c")
           source = path.read_text()
 
           copy_sequence = "\tx_copy_selection();\n\tusleep(50000);\n\t\n"
