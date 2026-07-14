@@ -123,7 +123,10 @@ jobs:
           test -n "$generated"
 
           output="warpd-${VERSION}-x86_64.AppImage"
-          mv "$generated" "$output"
+          if [ "$(basename "$generated")" != "$output" ]; then
+            mv -- "$generated" "$output"
+          fi
+          test -f "$output"
           chmod +x "$output"
           echo "APPIMAGE_PATH=$output" >> "$GITHUB_ENV"
 
