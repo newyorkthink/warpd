@@ -26,6 +26,7 @@
 - Changed releases from a rolling prerelease to versioned stable releases.
 - Consolidated the X11 AT-SPI implementation into one production source file.
 - Corrected source-install dependencies and repository URLs.
+- Published through the versioned stable tag `v2.3.0`.
 
 ## 2.2.0
 
