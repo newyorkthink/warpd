@@ -150,6 +150,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # Publish the verified AppImage as a reusable rolling GitHub Release asset.
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
