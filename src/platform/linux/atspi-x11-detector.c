@@ -35,7 +35,6 @@ typedef struct {
 typedef struct {
 	GPtrArray *elements;
 	GHashTable *seen;
-	AtspiAccessible *window;
 	gint win_x;
 	gint win_y;
 	gint win_w;
@@ -61,7 +60,6 @@ static void get_accessible_rect(
 	*y = 0;
 	*w = 0;
 	*h = 0;
-
 	component = atspi_accessible_get_component(accessible);
 	if (!component)
 		return;
@@ -77,7 +75,6 @@ static void get_accessible_rect(
 		*h = rect->height;
 		g_free(rect);
 	}
-
 	g_object_unref(component);
 }
 
@@ -87,12 +84,9 @@ static gchar *casefold_text(const gchar *text)
 
 	if (!text)
 		return g_strdup("");
-
-	if (g_utf8_validate(text, -1, NULL))
-		folded = g_utf8_casefold(text, -1);
-	else
-		folded = g_ascii_strdown(text, -1);
-
+	folded = g_utf8_validate(text, -1, NULL)
+	             ? g_utf8_casefold(text, -1)
+	             : g_ascii_strdown(text, -1);
 	g_strstrip(folded);
 	return folded;
 }
@@ -105,17 +99,14 @@ static gint text_match_score(const gchar *left, const gchar *right)
 
 	if (!left || !right || !*left || !*right)
 		return 0;
-
 	a = casefold_text(left);
 	b = casefold_text(right);
-
 	if (strlen(a) >= 3 && strlen(b) >= 3) {
 		if (g_strcmp0(a, b) == 0)
 			score = 360;
 		else if (strstr(a, b) || strstr(b, a))
 			score = 240;
 	}
-
 	g_free(a);
 	g_free(b);
 	return score;
@@ -134,24 +125,12 @@ static gchar *x11_get_text_property(Window window, const char *property_name)
 	property = XInternAtom(dpy, property_name, True);
 	if (property == None)
 		return NULL;
-
 	if (XGetWindowProperty(
-		dpy,
-		window,
-		property,
-		0,
-		4096,
-		False,
-		AnyPropertyType,
-		&actual_type,
-		&actual_format,
-		&item_count,
-		&bytes_after,
+		dpy, window, property, 0, 4096, False, AnyPropertyType,
+		&actual_type, &actual_format, &item_count, &bytes_after,
 		&data) == Success &&
-	    data && actual_format == 8 && item_count > 0) {
+	    data && actual_format == 8 && item_count > 0)
 		text = g_strndup((const gchar *)data, item_count);
-	}
-
 	if (data)
 		XFree(data);
 	return text;
@@ -170,24 +149,12 @@ static guint x11_get_window_pid(Window window)
 	property = XInternAtom(dpy, "_NET_WM_PID", True);
 	if (property == None)
 		return 0;
-
 	if (XGetWindowProperty(
-		dpy,
-		window,
-		property,
-		0,
-		1,
-		False,
-		XA_CARDINAL,
-		&actual_type,
-		&actual_format,
-		&item_count,
-		&bytes_after,
+		dpy, window, property, 0, 1, False, XA_CARDINAL,
+		&actual_type, &actual_format, &item_count, &bytes_after,
 		&data) == Success &&
-	    data && actual_format == 32 && item_count == 1) {
+	    data && actual_format == 32 && item_count == 1)
 		pid = (guint)(*(unsigned long *)data);
-	}
-
 	if (data)
 		XFree(data);
 	return pid;
@@ -196,7 +163,7 @@ static guint x11_get_window_pid(Window window)
 static gboolean x11_get_active_window_info(X11ActiveWindowInfo *info)
 {
 	Window root;
-	Atom active_property;
+	Atom property;
 	Atom actual_type = None;
 	int actual_format = 0;
 	unsigned long item_count = 0;
@@ -210,24 +177,13 @@ static gboolean x11_get_active_window_info(X11ActiveWindowInfo *info)
 	memset(info, 0, sizeof(*info));
 	if (!dpy)
 		return FALSE;
-
 	root = DefaultRootWindow(dpy);
-	active_property = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", True);
-	if (active_property == None)
+	property = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", True);
+	if (property == None)
 		return FALSE;
-
 	if (XGetWindowProperty(
-		dpy,
-		root,
-		active_property,
-		0,
-		1,
-		False,
-		XA_WINDOW,
-		&actual_type,
-		&actual_format,
-		&item_count,
-		&bytes_after,
+		dpy, root, property, 0, 1, False, XA_WINDOW,
+		&actual_type, &actual_format, &item_count, &bytes_after,
 		&data) != Success ||
 	    !data || actual_format != 32 || item_count != 1) {
 		if (data)
@@ -242,7 +198,8 @@ static gboolean x11_get_active_window_info(X11ActiveWindowInfo *info)
 
 	info->pid = x11_get_window_pid(info->xid);
 	info->title = x11_get_text_property(info->xid, "_NET_WM_NAME");
-	if ((!info->title || !*info->title) && XFetchName(dpy, info->xid, &legacy_title)) {
+	if ((!info->title || !*info->title) &&
+	    XFetchName(dpy, info->xid, &legacy_title)) {
 		g_free(info->title);
 		info->title = g_strdup(legacy_title);
 		XFree(legacy_title);
@@ -264,19 +221,12 @@ static gboolean x11_get_active_window_info(X11ActiveWindowInfo *info)
 		info->w = attributes.width;
 		info->h = attributes.height;
 		if (!XTranslateCoordinates(
-			dpy,
-			info->xid,
-			root,
-			0,
-			0,
-			&info->x,
-			&info->y,
-			&child)) {
+			dpy, info->xid, root, 0, 0,
+			&info->x, &info->y, &child)) {
 			info->x = attributes.x;
 			info->y = attributes.y;
 		}
 	}
-
 	return TRUE;
 }
 
@@ -300,16 +250,12 @@ static gint geometry_match_score(
 	gint right;
 	gint bottom;
 	gint64 intersection;
-	gint64 window_area;
-	gint64 target_area;
 	gint64 smaller_area;
-	double overlap_ratio;
 	gint score;
 
 	get_accessible_rect(window, &x, &y, &w, &h);
 	if (w <= 0 || h <= 0 || target->w <= 0 || target->h <= 0)
 		return 0;
-
 	left = MAX(x, target->x);
 	top = MAX(y, target->y);
 	right = MIN(x + w, target->x + target->w);
@@ -318,20 +264,14 @@ static gint geometry_match_score(
 		return -180;
 
 	intersection = (gint64)(right - left) * (bottom - top);
-	window_area = (gint64)w * h;
-	target_area = (gint64)target->w * target->h;
-	smaller_area = MIN(window_area, target_area);
+	smaller_area = MIN((gint64)w * h, (gint64)target->w * target->h);
 	if (smaller_area <= 0)
 		return 0;
-
-	overlap_ratio = (double)intersection / (double)smaller_area;
-	score = (gint)(overlap_ratio * 380.0);
-
+	score = (gint)(((double)intersection / (double)smaller_area) * 380.0);
 	if (ABS(x - target->x) <= 12 && ABS(y - target->y) <= 12)
 		score += 60;
 	if (ABS(w - target->w) <= 24 && ABS(h - target->h) <= 24)
 		score += 60;
-
 	return score;
 }
 
@@ -362,10 +302,7 @@ static AtspiAccessible *find_best_atspi_window(void)
 		    target.pid,
 		    target.title ? target.title : "",
 		    target.wm_class ? target.wm_class : "",
-		    target.x,
-		    target.y,
-		    target.w,
-		    target.h);
+		    target.x, target.y, target.w, target.h);
 	}
 
 	desktop = atspi_get_desktop(0);
@@ -382,7 +319,6 @@ static AtspiAccessible *find_best_atspi_window(void)
 
 		if (!app)
 			continue;
-
 		app_name = atspi_accessible_get_name(app, NULL);
 		app_pid = atspi_accessible_get_process_id(app, NULL);
 
@@ -398,7 +334,6 @@ static AtspiAccessible *find_best_atspi_window(void)
 
 			if (!window)
 				continue;
-
 			states = atspi_accessible_get_state_set(window);
 			active = state_contains(states, ATSPI_STATE_ACTIVE);
 			visible = state_contains(states, ATSPI_STATE_SHOWING) ||
@@ -426,7 +361,6 @@ static AtspiAccessible *find_best_atspi_window(void)
 					g_object_unref(sole_visible);
 				sole_visible = g_object_ref(window);
 			}
-
 			if (score > best_score) {
 				if (best)
 					g_object_unref(best);
@@ -444,11 +378,9 @@ static AtspiAccessible *find_best_atspi_window(void)
 				g_object_unref(states);
 			g_object_unref(window);
 		}
-
 		g_free(app_name);
 		g_object_unref(app);
 	}
-
 	g_object_unref(desktop);
 
 	if (best && best_score < 120) {
@@ -464,8 +396,7 @@ static AtspiAccessible *find_best_atspi_window(void)
 		    "AT-SPI: matched app='%s' window='%s' pid=%u score=%d\n",
 		    best_app_name ? best_app_name : "",
 		    best_window_name ? best_window_name : "",
-		    best_pid,
-		    best_score);
+		    best_pid, best_score);
 	} else {
 		fprintf(stderr, "AT-SPI: no AT-SPI window matched the X11 active window\n");
 	}
@@ -485,7 +416,6 @@ static gboolean accessible_is_visible(AtspiAccessible *accessible)
 
 	if (!states)
 		return FALSE;
-
 	visible = atspi_state_set_contains(states, ATSPI_STATE_SHOWING) &&
 	          atspi_state_set_contains(states, ATSPI_STATE_VISIBLE);
 	g_object_unref(states);
@@ -495,31 +425,51 @@ static gboolean accessible_is_visible(AtspiAccessible *accessible)
 static gboolean role_name_is_interactive(const gchar *role)
 {
 	static const gchar *roles[] = {
-		"push button",
-		"toggle button",
-		"check box",
-		"radio button",
-		"link",
-		"entry",
-		"password text",
-		"combo box",
-		"menu item",
-		"check menu item",
-		"radio menu item",
-		"page tab",
-		"spin button",
-		"slider",
-		"scroll bar",
-		"tree item",
-		"list item",
-		"table cell",
-		"image",
+		"push button", "toggle button", "check box", "radio button",
+		"link", "entry", "password text", "combo box", "menu item",
+		"check menu item", "radio menu item", "page tab", "spin button",
+		"slider", "scroll bar", "tree item", "list item", "table cell",
 		NULL,
 	};
 
 	if (!role)
 		return FALSE;
+	for (gint i = 0; roles[i]; i++) {
+		if (g_ascii_strcasecmp(role, roles[i]) == 0)
+			return TRUE;
+	}
+	return FALSE;
+}
 
+static gboolean accessible_has_action(AtspiAccessible *accessible)
+{
+	AtspiAction *action = atspi_accessible_get_action(accessible);
+	if (!action)
+		return FALSE;
+	g_object_unref(action);
+	return TRUE;
+}
+
+static gboolean accessible_has_editable_text(AtspiAccessible *accessible)
+{
+	AtspiEditableText *editable =
+	    atspi_accessible_get_editable_text(accessible);
+	if (!editable)
+		return FALSE;
+	g_object_unref(editable);
+	return TRUE;
+}
+
+static gboolean role_is_generic_container(const gchar *role)
+{
+	static const gchar *roles[] = {
+		"application", "frame", "dialog", "panel", "section",
+		"html container", "document web", "document frame", "paragraph",
+		"filler", "grouping", "scroll pane", NULL,
+	};
+
+	if (!role)
+		return TRUE;
 	for (gint i = 0; roles[i]; i++) {
 		if (g_ascii_strcasecmp(role, roles[i]) == 0)
 			return TRUE;
@@ -534,11 +484,12 @@ static gboolean accessible_is_interactive(
 	AtspiStateSet *states;
 	gboolean state_interactive = FALSE;
 
-	if (atspi_accessible_is_action(accessible) ||
-	    atspi_accessible_is_editable_text(accessible) ||
-	    atspi_accessible_is_hyperlink(accessible) ||
-	    role_name_is_interactive(role))
+	if (role_name_is_interactive(role) ||
+	    accessible_has_action(accessible) ||
+	    accessible_has_editable_text(accessible))
 		return TRUE;
+	if (role_is_generic_container(role))
+		return FALSE;
 
 	states = atspi_accessible_get_state_set(accessible);
 	if (states) {
@@ -548,7 +499,6 @@ static gboolean accessible_is_interactive(
 		    atspi_state_set_contains(states, ATSPI_STATE_EDITABLE);
 		g_object_unref(states);
 	}
-
 	return state_interactive;
 }
 
@@ -564,11 +514,23 @@ static gboolean rect_overlaps_window(
 
 	if (context->win_w <= 0 || context->win_h <= 0)
 		return TRUE;
-
 	right = MIN(x + w, context->win_x + context->win_w);
 	bottom = MIN(y + h, context->win_y + context->win_h);
 	return right > MAX(x, context->win_x) &&
 	       bottom > MAX(y, context->win_y);
+}
+
+static char *duplicate_glib_text(gchar *text, const char *fallback)
+{
+	char *copy;
+
+	if (!text || !*text) {
+		g_free(text);
+		return strdup(fallback ? fallback : "");
+	}
+	copy = strdup(text);
+	g_free(text);
+	return copy;
 }
 
 static void collect_accessible_elements(
@@ -576,25 +538,23 @@ static void collect_accessible_elements(
     gint depth,
     CollectContext *context)
 {
-	gint child_count;
 	gint x;
 	gint y;
 	gint w;
 	gint h;
-	gchar *role = NULL;
+	gint child_count;
+	gchar *role;
 
 	if (!node || depth > context->max_depth ||
 	    (gint)context->elements->len >= context->max_elements)
 		return;
-
 	if (depth > 0 && !accessible_is_visible(node))
 		return;
 
 	get_accessible_rect(node, &x, &y, &w, &h);
 	role = atspi_accessible_get_role_name(node, NULL);
-
 	if (w >= context->min_width && h >= context->min_height &&
-	    w * h >= context->min_area &&
+	    (gint64)w * h >= context->min_area &&
 	    rect_overlaps_window(context, x, y, w, h) &&
 	    accessible_is_interactive(node, role)) {
 		gchar *key = g_strdup_printf("%d:%d:%d:%d", x, y, w, h);
@@ -602,29 +562,32 @@ static void collect_accessible_elements(
 		if (!g_hash_table_contains(context->seen, key)) {
 			struct ui_element *element = calloc(1, sizeof(*element));
 			gchar *name = atspi_accessible_get_name(node, NULL);
+			char *role_copy;
 
-			if (!name || !*name) {
+			if (element) {
+				if (!name || !*name) {
+					g_free(name);
+					name = atspi_accessible_get_description(node, NULL);
+				}
+				role_copy = strdup(role ? role : "element");
+				element->x = x;
+				element->y = y;
+				element->w = w;
+				element->h = h;
+				element->name = duplicate_glib_text(
+				    name,
+				    role ? role : "UI element");
+				element->role = role_copy;
+				g_ptr_array_add(context->elements, element);
+				g_hash_table_add(context->seen, key);
+			} else {
 				g_free(name);
-				name = atspi_accessible_get_description(node, NULL);
+				g_free(key);
 			}
-			if (!name || !*name) {
-				g_free(name);
-				name = g_strdup(role ? role : "UI element");
-			}
-
-			element->x = x;
-			element->y = y;
-			element->w = w;
-			element->h = h;
-			element->name = name;
-			element->role = g_strdup(role ? role : "element");
-			g_ptr_array_add(context->elements, element);
-			g_hash_table_add(context->seen, key);
 		} else {
 			g_free(key);
 		}
 	}
-
 	g_free(role);
 
 	child_count = atspi_accessible_get_child_count(node, NULL);
@@ -654,7 +617,6 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 
 	if (!result)
 		return NULL;
-
 	atspi_init();
 	window = find_best_atspi_window();
 	if (!window) {
@@ -669,7 +631,6 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 	memset(&context, 0, sizeof(context));
 	context.elements = g_ptr_array_new();
 	context.seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-	context.window = window;
 	context.max_depth = config_get_int("ui_max_depth");
 	context.max_elements = config_get_int("ui_max_elements");
 	context.min_width = config_get_int("ui_min_width");
@@ -681,7 +642,6 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 	    &context.win_y,
 	    &context.win_w,
 	    &context.win_h);
-
 	collect_accessible_elements(window, 0, &context);
 	g_object_unref(window);
 
@@ -699,9 +659,13 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 	result->elements = calloc(context.elements->len, sizeof(*result->elements));
 	if (!result->elements) {
 		result->error = -3;
-		snprintf(result->error_msg, sizeof(result->error_msg), "Memory allocation failed");
+		snprintf(
+		    result->error_msg,
+		    sizeof(result->error_msg),
+		    "Memory allocation failed");
 		for (guint i = 0; i < context.elements->len; i++) {
-			struct ui_element *element = g_ptr_array_index(context.elements, i);
+			struct ui_element *element =
+			    g_ptr_array_index(context.elements, i);
 			free(element->name);
 			free(element->role);
 			free(element);
@@ -716,10 +680,12 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 		result->elements[i] = *element;
 		free(element);
 	}
-
 	result->count = context.elements->len;
 	result->error = 0;
-	fprintf(stderr, "AT-SPI: collected %zu interactive elements from matched window\n", result->count);
+	fprintf(
+	    stderr,
+	    "AT-SPI: collected %zu interactive elements from matched window\n",
+	    result->count);
 	g_hash_table_destroy(context.seen);
 	g_ptr_array_free(context.elements, TRUE);
 	return result;
@@ -737,7 +703,10 @@ struct ui_detection_result *atspi_x11_detect_ui_elements(void)
 	struct ui_detection_result *result = calloc(1, sizeof(*result));
 	if (result) {
 		result->error = -1;
-		snprintf(result->error_msg, sizeof(result->error_msg), "X11 is not available");
+		snprintf(
+		    result->error_msg,
+		    sizeof(result->error_msg),
+		    "X11 is not available");
 	}
 	return result;
 }
