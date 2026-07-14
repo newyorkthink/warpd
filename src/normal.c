@@ -236,8 +236,24 @@ struct input_event *normal_mode(struct input_event *start_ev, int oneshot)
 			if (platform->insert_text_mode) {
 				int inserted;
 
-				/* Let the editor and target application receive keyboard events. */
+				/*
+				 * Pressing i while visual drag mode is still active must first
+				 * release the mouse button. Otherwise the browser has not
+				 * finalized PRIMARY yet and the editor cannot receive clicks.
+				 */
+				if (dragging) {
+					platform->mouse_up(config_get_int("drag_button"));
+					dragging = 0;
+				}
+
+				/* Allow the target application to publish the completed selection. */
+				usleep(120000);
+
+				platform->screen_clear(scr);
+				platform->commit();
 				platform->input_ungrab_keyboard();
+				platform->mouse_show();
+
 				inserted = platform->insert_text_mode(scr);
 
 				/* Cancel closes both the editor and the active normal-mode session. */
@@ -247,6 +263,8 @@ struct input_event *normal_mode(struct input_event *start_ev, int oneshot)
 				}
 
 				platform->input_grab_keyboard();
+				if (!system_cursor)
+					platform->mouse_hide();
 			}
 			redraw(scr, mx, my, !show_cursor);
 		} else if (config_input_match(ev, "exit") ||
