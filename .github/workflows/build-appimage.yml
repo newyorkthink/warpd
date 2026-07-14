@@ -1,0 +1,148 @@
+name: Build AppImage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/build-appimage.yml
+      - Makefile
+      - mk/**
+      - src/**
+      - files/**
+
+permissions:
+  contents: read
+
+jobs:
+  build-appimage:
+    name: Build x86_64 AppImage
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            g++ \
+            pkg-config \
+            wget \
+            file \
+            patchelf \
+            desktop-file-utils \
+            libxi-dev \
+            libxinerama-dev \
+            libxft-dev \
+            libxfixes-dev \
+            libxext-dev \
+            libxtst-dev \
+            libx11-dev \
+            libatspi2.0-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libopencv-dev
+
+      - name: Prepare Ubuntu multiarch include paths
+        run: |
+          multiarch="$(gcc -print-multiarch)"
+
+          sudo mkdir -p /usr/lib/glib-2.0 /usr/lib/dbus-1.0
+          sudo ln -sfn "/usr/lib/${multiarch}/glib-2.0/include" /usr/lib/glib-2.0/include
+          sudo ln -sfn "/usr/lib/${multiarch}/dbus-1.0/include" /usr/lib/dbus-1.0/include
+
+      - name: Build warpd with OpenCV
+        run: |
+          make clean || true
+          make -j"$(nproc)" OPENCV_ENABLE=1 DISABLE_WAYLAND=1
+
+          warpd_bin="$(find bin -maxdepth 1 -type f -name 'warpd-*' -print -quit)"
+          test -n "$warpd_bin"
+          test -x "$warpd_bin"
+
+          ldd "$warpd_bin" | tee warpd-ldd.txt
+          grep -q 'libopencv_core' warpd-ldd.txt
+          grep -q 'libopencv_imgproc' warpd-ldd.txt
+
+          version="$(awk -F= '/^VERSION=/{print $2; exit}' Makefile | tr -d '[:space:]')"
+          test -n "$version"
+
+          echo "WARPD_BIN=$warpd_bin" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Create AppDir metadata
+        run: |
+          rm -rf AppDir
+          mkdir -p AppDir/usr/bin AppDir/usr/share/man/man1
+
+          install -m755 "$WARPD_BIN" AppDir/usr/bin/warpd
+
+          if [ -f files/warpd.1.gz ]; then
+            install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
+          fi
+
+          cat > warpd.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=warpd
+          Comment=Keyboard-driven mouse control with Smart Hint
+          Exec=warpd
+          Icon=warpd
+          Terminal=false
+          Categories=Utility;Accessibility;
+          EOF
+
+          cat > warpd.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="48" fill="#202124"/>
+            <path d="M66 40v142l39-34 27 62 28-13-27-61 51-4z" fill="#f1f3f4" stroke="#202124" stroke-width="10" stroke-linejoin="round"/>
+          </svg>
+          EOF
+
+          desktop-file-validate warpd.desktop
+
+      - name: Package AppImage and bundle runtime libraries
+        run: |
+          wget -q \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -O linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+          APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/warpd \
+            --desktop-file warpd.desktop \
+            --icon-file warpd.svg \
+            --output appimage
+
+          generated="$(find . -maxdepth 1 -type f -name 'warpd*.AppImage' -print -quit)"
+          test -n "$generated"
+
+          output="warpd-${VERSION}-x86_64.AppImage"
+          mv "$generated" "$output"
+          chmod +x "$output"
+          echo "APPIMAGE_PATH=$output" >> "$GITHUB_ENV"
+
+      - name: Verify bundled OpenCV libraries
+        run: |
+          rm -rf squashfs-root
+          "./$APPIMAGE_PATH" --appimage-extract >/dev/null
+
+          test -x squashfs-root/usr/bin/warpd
+          find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
+          find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
+
+          file "$APPIMAGE_PATH"
+          du -h "$APPIMAGE_PATH"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warpd-${{ env.VERSION }}-x86_64
+          path: ${{ env.APPIMAGE_PATH }}
+          if-no-files-found: error
+          retention-days: 30
