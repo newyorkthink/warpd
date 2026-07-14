@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /**
  * Convert legacy AT-SPI ElementInfo to platform ui_element.
