@@ -1,9 +1,10 @@
 CFILES=$(shell find src/platform/linux/*.c src/*.c src/common/*.c src/smart_hint/*.c)
 CXXFILES=
 
-# Prefer the strict X11/AT-SPI matcher when it is present. Keeping this
-# conditional makes this commit build successfully before the v2 source lands.
-ifneq ($(wildcard src/platform/linux/atspi-x11-detector-v2.c),)
+# Prefer the newest strict X11/AT-SPI matcher when present.
+ifneq ($(wildcard src/platform/linux/atspi-x11-detector-v3.c),)
+	CFILES:=$(filter-out src/platform/linux/atspi-x11-detector.c src/platform/linux/atspi-x11-detector-v2.c,$(CFILES))
+else ifneq ($(wildcard src/platform/linux/atspi-x11-detector-v2.c),)
 	CFILES:=$(filter-out src/platform/linux/atspi-x11-detector.c,$(CFILES))
 endif
 
