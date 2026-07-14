@@ -62,28 +62,6 @@ jobs:
           sudo ln -sfn "/usr/lib/${multiarch}/glib-2.0/include" /usr/lib/glib-2.0/include
           sudo ln -sfn "/usr/lib/${multiarch}/dbus-1.0/include" /usr/lib/dbus-1.0/include
 
-      - name: Fix insert mode for AppImage runtime
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("src/platform/linux/X/X.c")
-          source = path.read_text()
-
-          copy_sequence = "\tx_copy_selection();\n\tusleep(50000);\n\t\n"
-          if copy_sequence not in source:
-              raise SystemExit("insert mode copy sequence was not found")
-          source = source.replace(copy_sequence, "", 1)
-
-          hidden_zenity = "FILE *fp = popen(\"zenity --entry --title='Insert Text' --text='Type text and press OK:' 2>/dev/null\", \"r\");"
-          visible_zenity = "FILE *fp = popen(\"zenity --entry --title='Insert Text' --text='Type text and press OK:'\", \"r\");"
-          if hidden_zenity not in source:
-              raise SystemExit("Zenity command was not found")
-          source = source.replace(hidden_zenity, visible_zenity, 1)
-
-          path.write_text(source)
-          PY
-
       - name: Build warpd with OpenCV
         run: |
           make clean || true
@@ -103,17 +81,19 @@ jobs:
           echo "WARPD_BIN=$warpd_bin" >> "$GITHUB_ENV"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Create AppDir metadata
+      - name: Create AppDir metadata and bundled runtime
         run: |
           rm -rf AppDir
           mkdir -p \
             AppDir/usr/bin \
+            AppDir/usr/lib \
+            AppDir/usr/libexec \
             AppDir/usr/share/man/man1 \
             AppDir/usr/share/glib-2.0/schemas \
             AppDir/apprun-hooks
 
           install -m755 "$WARPD_BIN" AppDir/usr/bin/warpd
-          install -m755 "$(command -v zenity)" AppDir/usr/bin/zenity
+          install -m755 "$(command -v zenity)" AppDir/usr/libexec/zenity.real
           install -m755 "$(command -v xclip)" AppDir/usr/bin/xclip
 
           test -d /usr/share/zenity
@@ -121,11 +101,220 @@ jobs:
           cp -a /usr/share/glib-2.0/schemas/. AppDir/usr/share/glib-2.0/schemas/
           glib-compile-schemas AppDir/usr/share/glib-2.0/schemas
 
+          cat > zenity-path-redirect.c <<'EOF'
+          #define _GNU_SOURCE
+          #include <dlfcn.h>
+          #include <fcntl.h>
+          #include <limits.h>
+          #include <stdarg.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/stat.h>
+          #include <unistd.h>
+
+          static const char *redirect_zenity_path(const char *path)
+          {
+              static __thread char redirected[PATH_MAX];
+              static const char prefix[] = "/usr/share/zenity/";
+              const char *appdir;
+              int written;
+
+              if (!path || strncmp(path, prefix, sizeof(prefix) - 1) != 0)
+                  return path;
+
+              appdir = getenv("APPDIR");
+              if (!appdir || !*appdir)
+                  return path;
+
+              written = snprintf(
+                  redirected,
+                  sizeof(redirected),
+                  "%s/usr/share/zenity/%s",
+                  appdir,
+                  path + sizeof(prefix) - 1);
+
+              if (written < 0 || (size_t)written >= sizeof(redirected))
+                  return path;
+
+              return redirected;
+          }
+
+          static int mode_is_required(int flags)
+          {
+              if (flags & O_CREAT)
+                  return 1;
+          #ifdef O_TMPFILE
+              if ((flags & O_TMPFILE) == O_TMPFILE)
+                  return 1;
+          #endif
+              return 0;
+          }
+
+          int open(const char *path, int flags, ...)
+          {
+              static int (*real_open)(const char *, int, ...) = NULL;
+              mode_t mode = 0;
+
+              if (!real_open)
+                  real_open = dlsym(RTLD_NEXT, "open");
+
+              if (mode_is_required(flags)) {
+                  va_list ap;
+                  va_start(ap, flags);
+                  mode = va_arg(ap, mode_t);
+                  va_end(ap);
+                  return real_open(redirect_zenity_path(path), flags, mode);
+              }
+
+              return real_open(redirect_zenity_path(path), flags);
+          }
+
+          int open64(const char *path, int flags, ...)
+          {
+              static int (*real_open64)(const char *, int, ...) = NULL;
+              mode_t mode = 0;
+
+              if (!real_open64)
+                  real_open64 = dlsym(RTLD_NEXT, "open64");
+
+              if (mode_is_required(flags)) {
+                  va_list ap;
+                  va_start(ap, flags);
+                  mode = va_arg(ap, mode_t);
+                  va_end(ap);
+                  return real_open64(redirect_zenity_path(path), flags, mode);
+              }
+
+              return real_open64(redirect_zenity_path(path), flags);
+          }
+
+          int openat(int dirfd, const char *path, int flags, ...)
+          {
+              static int (*real_openat)(int, const char *, int, ...) = NULL;
+              mode_t mode = 0;
+
+              if (!real_openat)
+                  real_openat = dlsym(RTLD_NEXT, "openat");
+
+              if (mode_is_required(flags)) {
+                  va_list ap;
+                  va_start(ap, flags);
+                  mode = va_arg(ap, mode_t);
+                  va_end(ap);
+                  return real_openat(dirfd, redirect_zenity_path(path), flags, mode);
+              }
+
+              return real_openat(dirfd, redirect_zenity_path(path), flags);
+          }
+
+          int openat64(int dirfd, const char *path, int flags, ...)
+          {
+              static int (*real_openat64)(int, const char *, int, ...) = NULL;
+              mode_t mode = 0;
+
+              if (!real_openat64)
+                  real_openat64 = dlsym(RTLD_NEXT, "openat64");
+
+              if (mode_is_required(flags)) {
+                  va_list ap;
+                  va_start(ap, flags);
+                  mode = va_arg(ap, mode_t);
+                  va_end(ap);
+                  return real_openat64(dirfd, redirect_zenity_path(path), flags, mode);
+              }
+
+              return real_openat64(dirfd, redirect_zenity_path(path), flags);
+          }
+
+          FILE *fopen(const char *path, const char *mode)
+          {
+              static FILE *(*real_fopen)(const char *, const char *) = NULL;
+
+              if (!real_fopen)
+                  real_fopen = dlsym(RTLD_NEXT, "fopen");
+
+              return real_fopen(redirect_zenity_path(path), mode);
+          }
+
+          FILE *fopen64(const char *path, const char *mode)
+          {
+              static FILE *(*real_fopen64)(const char *, const char *) = NULL;
+
+              if (!real_fopen64)
+                  real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+
+              return real_fopen64(redirect_zenity_path(path), mode);
+          }
+
+          int access(const char *path, int mode)
+          {
+              static int (*real_access)(const char *, int) = NULL;
+
+              if (!real_access)
+                  real_access = dlsym(RTLD_NEXT, "access");
+
+              return real_access(redirect_zenity_path(path), mode);
+          }
+
+          int stat(const char *path, struct stat *buf)
+          {
+              static int (*real_stat)(const char *, struct stat *) = NULL;
+
+              if (!real_stat)
+                  real_stat = dlsym(RTLD_NEXT, "stat");
+
+              return real_stat(redirect_zenity_path(path), buf);
+          }
+
+          int lstat(const char *path, struct stat *buf)
+          {
+              static int (*real_lstat)(const char *, struct stat *) = NULL;
+
+              if (!real_lstat)
+                  real_lstat = dlsym(RTLD_NEXT, "lstat");
+
+              return real_lstat(redirect_zenity_path(path), buf);
+          }
+          EOF
+
+          gcc -shared -fPIC -O2 -Wall -Wextra \
+            zenity-path-redirect.c \
+            -o AppDir/usr/lib/libwarpd-zenity-path.so \
+            -ldl
+
+          cat > AppDir/usr/bin/zenity <<'EOF'
+          #!/bin/sh
+          self="$(readlink -f "$0")"
+          appdir="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$self")/../.." && pwd)}"
+          preload="$appdir/usr/lib/libwarpd-zenity-path.so"
+
+          export APPDIR="$appdir"
+          export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="$appdir/usr/share/glib-2.0/schemas"
+
+          case ":${LD_PRELOAD:-}:" in
+            *":$preload:"*) ;;
+            *) export LD_PRELOAD="$preload${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+          esac
+
+          exec "$appdir/usr/libexec/zenity.real" "$@"
+          EOF
+          chmod +x AppDir/usr/bin/zenity
+
+          printf '%s\n' 'warpd-path-redirect-ok' > AppDir/usr/share/zenity/warpd-path-test
+          redirected="$(
+            APPDIR="$PWD/AppDir" \
+            LD_PRELOAD="$PWD/AppDir/usr/lib/libwarpd-zenity-path.so" \
+            cat /usr/share/zenity/warpd-path-test
+          )"
+          test "$redirected" = 'warpd-path-redirect-ok'
+          rm AppDir/usr/share/zenity/warpd-path-test
+
           if [ -f files/warpd.1.gz ]; then
             install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
           fi
 
-          # Make warpd's popen/system calls resolve the bundled tools and data first.
           cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF'
           export PATH="$this_dir/usr/bin:${PATH:-/usr/bin:/bin}"
           export XDG_DATA_DIRS="$this_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
@@ -162,7 +351,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --executable AppDir/usr/bin/warpd \
-            --executable AppDir/usr/bin/zenity \
+            --executable AppDir/usr/libexec/zenity.real \
             --executable AppDir/usr/bin/xclip \
             --desktop-file warpd.desktop \
             --icon-file warpd.svg \
@@ -186,18 +375,23 @@ jobs:
 
           test -x squashfs-root/usr/bin/warpd
           test -x squashfs-root/usr/bin/zenity
+          test -x squashfs-root/usr/libexec/zenity.real
           test -x squashfs-root/usr/bin/xclip
+          test -f squashfs-root/usr/lib/libwarpd-zenity-path.so
           test -f squashfs-root/apprun-hooks/00-bundled-tools.sh
-          test -d squashfs-root/usr/share/zenity
+          test -f squashfs-root/usr/share/zenity/zenity.ui
           test -f squashfs-root/usr/share/glib-2.0/schemas/gschemas.compiled
 
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
 
-          # GitHub Actions has no graphical DISPLAY. Verify linkage instead of
-          # launching Zenity, which would fail with "cannot open display".
-          for executable in warpd zenity xclip; do
-            ldd "squashfs-root/usr/bin/$executable" | tee "${executable}-bundled-ldd.txt"
+          for executable in warpd zenity.real xclip; do
+            case "$executable" in
+              zenity.real) path="squashfs-root/usr/libexec/$executable" ;;
+              *) path="squashfs-root/usr/bin/$executable" ;;
+            esac
+
+            ldd "$path" | tee "${executable}-bundled-ldd.txt"
             if grep -q 'not found' "${executable}-bundled-ldd.txt"; then
               echo "Missing bundled library for $executable" >&2
               exit 1
@@ -215,14 +409,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # Publish the verified AppImage as a reusable rolling GitHub Release asset.
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="appimage"
           title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, complete Zenity runtime data and xclip support."
+          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, Zenity resources and xclip support."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
