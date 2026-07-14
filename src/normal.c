@@ -234,9 +234,18 @@ struct input_event *normal_mode(struct input_event *start_ev, int oneshot)
 			goto exit;
 		} else if (config_input_match(ev, "toggle_insert_mode")) {
 			if (platform->insert_text_mode) {
-				/* Let the dialog and target application receive keyboard events. */
+				int inserted;
+
+				/* Let the editor and target application receive keyboard events. */
 				platform->input_ungrab_keyboard();
-				platform->insert_text_mode(scr);
+				inserted = platform->insert_text_mode(scr);
+
+				/* Cancel closes both the editor and the active normal-mode session. */
+				if (!inserted) {
+					ev = NULL;
+					goto exit;
+				}
+
 				platform->input_grab_keyboard();
 			}
 			redraw(scr, mx, my, !show_cursor);
