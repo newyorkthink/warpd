@@ -154,20 +154,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="continuous"
-          title="warpd ${VERSION} AppImage"
+          tag="v${VERSION}"
+          title="warpd v${VERSION}"
           notes="X11 x86_64 AppImage with bundled OpenCV runtime libraries."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
             gh release edit "$tag" \
               --title "$title" \
-              --notes "$notes" \
-              --prerelease
+              --notes "$notes"
           else
             gh release create "$tag" "$APPIMAGE_PATH" \
               --target "$GITHUB_SHA" \
               --title "$title" \
-              --notes "$notes" \
-              --prerelease
+              --notes "$notes"
           fi
