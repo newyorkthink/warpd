@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void apply_dark_theme(void)
