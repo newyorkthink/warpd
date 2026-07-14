@@ -201,7 +201,7 @@ static void set_opacity(Display *dpy, Window w, uint8_t _opacity)
 	unsigned int opacity =
 	    (unsigned int)(((double)_opacity / 255) * (double)0xffffffff);
 
-	XChangeProperty(dpy, w, OPACITY_ATOM, 32, PropModeReplace,
+	XChangeProperty(dpy, w, OPACITY_ATOM, XA_CARDINAL, 32, PropModeReplace,
 			(unsigned char *)&opacity, 1L);
 }
 
