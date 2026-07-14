@@ -1,6 +1,6 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 
 static void apply_dark_theme(void)
 {
@@ -16,11 +16,13 @@ static void apply_dark_theme(void)
 	    "label {"
 	    "  color: #f2f2f2;"
 	    "}"
-	    "entry {"
+	    "textview, textview text {"
 	    "  background-color: #252525;"
 	    "  color: #ffffff;"
 	    "  caret-color: #ffffff;"
-	    "  border-color: #555555;"
+	    "}"
+	    "scrolledwindow {"
+	    "  border: 1px solid #555555;"
 	    "}"
 	    "button {"
 	    "  background-image: none;"
@@ -62,25 +64,68 @@ static void apply_dark_theme(void)
 	g_object_unref(provider);
 }
 
+static gboolean editor_key_press(
+    GtkWidget *widget,
+    GdkEventKey *event,
+    gpointer user_data)
+{
+	GtkDialog *dialog = GTK_DIALOG(user_data);
+	(void)widget;
+
+	if (event->keyval == GDK_KEY_Escape) {
+		gtk_dialog_response(dialog, GTK_RESPONSE_CANCEL);
+		return TRUE;
+	}
+
+	if ((event->state & GDK_CONTROL_MASK) &&
+	    (event->keyval == GDK_KEY_Return ||
+	     event->keyval == GDK_KEY_KP_Enter)) {
+		gtk_dialog_response(dialog, GTK_RESPONSE_OK);
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+static gchar *get_initial_text(void)
+{
+	const char *environment_text = getenv("WARPD_ENTRY_TEXT");
+	GtkClipboard *primary;
+	gchar *primary_text;
+
+	if (environment_text && *environment_text)
+		return g_strdup(environment_text);
+
+	/* GTK negotiates UTF8_STRING correctly with terminals and browsers. */
+	primary = gtk_clipboard_get(GDK_SELECTION_PRIMARY);
+	primary_text = gtk_clipboard_wait_for_text(primary);
+	return primary_text;
+}
+
 int main(int argc, char **argv)
 {
 	GtkWidget *dialog;
 	GtkWidget *content;
 	GtkWidget *label;
-	GtkWidget *entry;
-	const char *initial_text;
-	const char *text;
+	GtkWidget *scrolled;
+	GtkWidget *text_view;
+	GtkTextBuffer *buffer;
+	GtkTextIter start;
+	GtkTextIter end;
+	GtkTextIter cursor;
+	gchar *initial_text;
+	gchar *text;
 	int response;
 
 	if (!gtk_init_check(&argc, &argv)) {
-		fprintf(stderr, "ERROR: Could not initialize GTK3 entry dialog.\n");
+		fprintf(stderr, "ERROR: Could not initialize GTK3 text editor.\n");
 		return 1;
 	}
 
 	apply_dark_theme();
 
 	dialog = gtk_dialog_new_with_buttons(
-	    "Insert Text",
+	    "Edit Text",
 	    NULL,
 	    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
 	    "_Cancel",
@@ -89,30 +134,53 @@ int main(int argc, char **argv)
 	    GTK_RESPONSE_OK,
 	    NULL);
 
-	gtk_window_set_default_size(GTK_WINDOW(dialog), 520, -1);
+	gtk_window_set_default_size(GTK_WINDOW(dialog), 760, 480);
 	gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
 	content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
 	gtk_container_set_border_width(GTK_CONTAINER(content), 12);
 
-	label = gtk_label_new("Type text and press Enter:");
+	label = gtk_label_new(
+	    "Edit text below. Enter inserts a new line; Ctrl+Enter submits; Esc cancels.");
 	gtk_widget_set_halign(label, GTK_ALIGN_START);
 
-	entry = gtk_entry_new();
-	gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+	scrolled = gtk_scrolled_window_new(NULL, NULL);
+	gtk_scrolled_window_set_policy(
+	    GTK_SCROLLED_WINDOW(scrolled),
+	    GTK_POLICY_AUTOMATIC,
+	    GTK_POLICY_AUTOMATIC);
+	gtk_widget_set_vexpand(scrolled, TRUE);
+	gtk_widget_set_hexpand(scrolled, TRUE);
 
-	initial_text = getenv("WARPD_ENTRY_TEXT");
+	text_view = gtk_text_view_new();
+	gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
+	gtk_text_view_set_left_margin(GTK_TEXT_VIEW(text_view), 10);
+	gtk_text_view_set_right_margin(GTK_TEXT_VIEW(text_view), 10);
+	gtk_text_view_set_top_margin(GTK_TEXT_VIEW(text_view), 10);
+	gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(text_view), 10);
+	gtk_container_add(GTK_CONTAINER(scrolled), text_view);
+
+	buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+	initial_text = get_initial_text();
 	if (initial_text && *initial_text) {
-		gtk_entry_set_text(GTK_ENTRY(entry), initial_text);
-		gtk_editable_set_position(GTK_EDITABLE(entry), -1);
+		gtk_text_buffer_set_text(buffer, initial_text, -1);
+		gtk_text_buffer_get_end_iter(buffer, &cursor);
+		gtk_text_buffer_place_cursor(buffer, &cursor);
 	}
+	g_free(initial_text);
+
+	g_signal_connect(
+	    text_view,
+	    "key-press-event",
+	    G_CALLBACK(editor_key_press),
+	    dialog);
 
 	gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 6);
-	gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 6);
+	gtk_box_pack_start(GTK_BOX(content), scrolled, TRUE, TRUE, 6);
 
 	gtk_widget_show_all(dialog);
-	gtk_widget_grab_focus(entry);
+	gtk_widget_grab_focus(text_view);
 
 	response = gtk_dialog_run(GTK_DIALOG(dialog));
 	if (response != GTK_RESPONSE_OK) {
@@ -120,15 +188,17 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	text = gtk_entry_get_text(GTK_ENTRY(entry));
+	gtk_text_buffer_get_bounds(buffer, &start, &end);
+	text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
 	if (!text || !*text) {
+		g_free(text);
 		gtk_widget_destroy(dialog);
 		return 1;
 	}
 
-	fputs(text, stdout);
-	fputc('\n', stdout);
+	fwrite(text, 1, strlen(text), stdout);
 	fflush(stdout);
+	g_free(text);
 
 	gtk_widget_destroy(dialog);
 	return 0;
