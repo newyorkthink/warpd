@@ -162,10 +162,12 @@ jobs:
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
             gh release edit "$tag" \
               --title "$title" \
-              --notes "$notes"
+              --notes "$notes" \
+              --prerelease
           else
             gh release create "$tag" "$APPIMAGE_PATH" \
               --target "$GITHUB_SHA" \
               --title "$title" \
-              --notes "$notes"
+              --notes "$notes" \
+              --prerelease
           fi
