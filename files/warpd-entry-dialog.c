@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static void apply_dark_theme(void)
 {
@@ -67,6 +68,7 @@ int main(int argc, char **argv)
 	GtkWidget *content;
 	GtkWidget *label;
 	GtkWidget *entry;
+	const char *initial_text;
 	const char *text;
 	int response;
 
@@ -99,6 +101,12 @@ int main(int argc, char **argv)
 
 	entry = gtk_entry_new();
 	gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+
+	initial_text = getenv("WARPD_ENTRY_TEXT");
+	if (initial_text && *initial_text) {
+		gtk_entry_set_text(GTK_ENTRY(entry), initial_text);
+		gtk_editable_set_position(GTK_EDITABLE(entry), -1);
+	}
 
 	gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 6);
 	gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 6);
