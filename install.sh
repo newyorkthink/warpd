@@ -1,119 +1,96 @@
-#!/bin/bash
-# Quick install script for warpd with smart hint mode
-# 
-# Usage:
-#   # Install latest version
-#   curl -fsSL https://raw.githubusercontent.com/atuan26/warpd/master/install.sh | sh
-#   
-#   # Install specific version
-#   curl -fsSL https://raw.githubusercontent.com/atuan26/warpd/master/install.sh | WARPD_VERSION=v2.0.0 sh
-#   
-#   # Run from source directory (if already cloned)
-#   ./install.sh
+#!/usr/bin/env bash
 
-set -e
+# Install warpd from source with X11 Smart Hint support.
+#
+# Latest master:
+#   curl -fsSL https://raw.githubusercontent.com/newyorkthink/warpd/master/install.sh | sh
+#
+# Specific release:
+#   curl -fsSL https://raw.githubusercontent.com/newyorkthink/warpd/master/install.sh | WARPD_VERSION=v2.3.0 sh
 
-echo "=== WARPD ==="
-echo ""
+set -euo pipefail
 
-# Check if running as root
-if [ "$EUID" -eq 0 ]; then
-    echo "Error: Please do not run this script as root"
-    echo "The script will ask for sudo password when needed"
-    exit 1
-fi
+REPOSITORY="https://github.com/newyorkthink/warpd.git"
+VERSION="${WARPD_VERSION:-master}"
+BUILD_DIR=""
+TEMP_DIR=""
+CLEANUP_NEEDED=false
 
-# Detect OS and install dependencies
-echo "Detecting system and installing dependencies..."
-if command -v apt &> /dev/null; then
-    echo "Detected Debian/Ubuntu system"
-    sudo apt update
-    sudo apt install -y \
-        git make gcc \
-        libxi-dev libxinerama-dev libxft-dev \
-        libxfixes-dev libxtst-dev libx11-dev \
-        libcairo2-dev libxkbcommon-dev liZenity dialogbwayland-dev \
-        libatspi2.0-dev libdbus-1-dev libglib2.0-dev \
-        zenity xclip wl-clipboard
-elif command -v pacman &> /dev/null; then
-    echo "Detected Arch Linux system"
-    sudo pacman -S --needed --noconfirm \
-        git make gcc \
-        libxi libxinerama libxft libxfixes libxtst libx11 \
-        cairo libxkbcommon wayland \
-        at-spi2-core dbus glib2 \
-        zenity xclip wl-clipboard
-elif command -v dnf &> /dev/null; then
-    echo "Detected Fedora/RHEL system"
-    sudo dnf install -y \
-        git make gcc \
-        libXi-devel libXinerama-devel libXft-devel \
-        libXfixes-devel libXtst-devel libX11-devel \
-        cairo-devel libxkbcommon-devel wayland-devel \
-        at-spi2-core-devel dbus-devel glib2-devel \
-        zenity xclip wl-clipboard
-else
-    echo "Error: Unsupported distribution"
-    echo "Please install dependencies manually and run: make && sudo make install"
-    exit 1
-fi
-
-# Check if we're already in a warpd source directory
-if [ -f "Makefile" ] && [ -f "src/warpd.c" ] && [ -d "src" ]; then
-    echo "Detected warpd source directory, building from current location..."
-    BUILD_DIR="$(pwd)"
-    CLEANUP_NEEDED=false
-else
-    echo ""
-    echo "Downloading warpd source..."
-    
-    # Allow version specification via environment variable
-    VERSION=${WARPD_VERSION:-"master"}
-    echo "Using version/branch: $VERSION"
-    
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
-    
-    if [ "$VERSION" = "master" ] || [ "$VERSION" = "latest" ]; then
-        git clone --depth 1 https://github.com/atuan26/warpd.git
-    else
-        git clone https://github.com/atuan26/warpd.git
-        cd warpd
-        git checkout "$VERSION" 2>/dev/null || {
-            echo "Error: Version/tag '$VERSION' not found"
-            echo "Available tags:"
-            git tag --sort=-version:refname | head -10
-            exit 1
-        }
-        cd ..
+cleanup() {
+    if [ "$CLEANUP_NEEDED" = true ] && [ -n "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
     fi
-    
-    cd warpd
-    BUILD_DIR="$(pwd)"
-    CLEANUP_NEEDED=true
+}
+trap cleanup EXIT
+
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    echo "Error: do not run this installer as root." >&2
+    echo "The installer invokes sudo only for dependencies and installation." >&2
+    exit 1
 fi
 
-echo ""
-echo "Building warpd..."
-make clean 2>/dev/null || true
-make
+install_dependencies() {
+    echo "Installing build dependencies..."
 
-echo ""
-echo "Installing warpd..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y \
+            git make gcc g++ pkg-config \
+            libxi-dev libxinerama-dev libxft-dev libxfixes-dev \
+            libxext-dev libxtst-dev libx11-dev \
+            libatspi2.0-dev libdbus-1-dev libglib2.0-dev \
+            libopencv-dev zenity xclip
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --needed --noconfirm \
+            git make gcc pkgconf \
+            libxi libxinerama libxft libxfixes libxext libxtst libx11 \
+            at-spi2-core dbus glib2 opencv zenity xclip
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y \
+            git make gcc gcc-c++ pkgconf-pkg-config \
+            libXi-devel libXinerama-devel libXft-devel libXfixes-devel \
+            libXext-devel libXtst-devel libX11-devel \
+            at-spi2-core-devel dbus-devel glib2-devel opencv-devel \
+            zenity xclip
+    else
+        echo "Error: unsupported distribution." >&2
+        echo "Install the X11, AT-SPI, GLib, OpenCV, Zenity and xclip dependencies manually." >&2
+        exit 1
+    fi
+}
+
+prepare_source() {
+    if [ -f Makefile ] && [ -f src/warpd.c ] && [ -d src ]; then
+        BUILD_DIR="$PWD"
+        echo "Using source directory: $BUILD_DIR"
+        return
+    fi
+
+    TEMP_DIR="$(mktemp -d)"
+    CLEANUP_NEEDED=true
+
+    if [ "$VERSION" = master ] || [ "$VERSION" = latest ]; then
+        git clone --depth 1 "$REPOSITORY" "$TEMP_DIR/warpd"
+    else
+        git clone --depth 1 --branch "$VERSION" "$REPOSITORY" "$TEMP_DIR/warpd"
+    fi
+
+    BUILD_DIR="$TEMP_DIR/warpd"
+}
+
+install_dependencies
+prepare_source
+
+cd "$BUILD_DIR"
+
+echo "Building warpd from: $VERSION"
+make clean >/dev/null 2>&1 || true
+make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
+    OPENCV_ENABLE=1 \
+    DISABLE_WAYLAND=1
+
 sudo make install
 
-if [ "$CLEANUP_NEEDED" = true ]; then
-    echo ""
-    echo "Cleaning up..."
-    cd ~
-    rm -rf "$TEMP_DIR"
-else
-    echo ""
-    echo "Build completed in source directory"
-fi
-
-echo ""
-echo "=== Installation Complete! ==="
-echo ""
-echo "For more information, see: man warpd"
-echo ""
+printf '\nInstalled: '
+warpd --version 2>/dev/null || echo "warpd"
+echo "Run 'man warpd' for usage details."

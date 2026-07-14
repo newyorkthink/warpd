@@ -1,14 +1,7 @@
 CFILES=$(shell find src/platform/linux/*.c src/*.c src/common/*.c src/smart_hint/*.c)
 CXXFILES=
 
-# Prefer the newest strict X11/AT-SPI matcher when present.
-ifneq ($(wildcard src/platform/linux/atspi-x11-detector-v3.c),)
-	CFILES:=$(filter-out src/platform/linux/atspi-x11-detector.c src/platform/linux/atspi-x11-detector-v2.c,$(CFILES))
-else ifneq ($(wildcard src/platform/linux/atspi-x11-detector-v2.c),)
-	CFILES:=$(filter-out src/platform/linux/atspi-x11-detector.c,$(CFILES))
-endif
-
-# OpenCV support for smart hint fallback
+# OpenCV support for Smart Hint fallback.
 OPENCV_ENABLE ?= 0
 ifeq ($(OPENCV_ENABLE), 1)
 	CFLAGS+=-I/usr/include/opencv4 -DHAVE_OPENCV
@@ -51,13 +44,16 @@ all: $(OBJECTS)
 	-mkdir -p bin
 	$(CXX) -o bin/warpd-$(VERSION) $(OBJECTS) $(CFLAGS) $(LDFLAGS)
 	@echo "Built: bin/warpd-$(VERSION)"
+
 clean:
 	-rm $(OBJECTS)
 	-rm -r bin
+
 install:
 	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man1/ $(DESTDIR)$(PREFIX)/bin/
 	install -m644 files/warpd.1.gz $(DESTDIR)$(PREFIX)/share/man/man1/
 	install -m755 bin/warpd-$(VERSION) $(DESTDIR)$(PREFIX)/bin/warpd
+
 uninstall:
 	rm $(DESTDIR)$(PREFIX)/share/man/man1/warpd.1.gz\
 		$(DESTDIR)$(PREFIX)/bin/warpd

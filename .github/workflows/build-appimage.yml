@@ -1,4 +1,4 @@
-name: Build AppImage
+name: Build Stable AppImage
 
 on:
   workflow_dispatch:
@@ -11,6 +11,8 @@ on:
       - mk/**
       - src/**
       - files/**
+      - install.sh
+      - CHANGELOG.md
 
 permissions:
   contents: write
@@ -21,15 +23,24 @@ concurrency:
 
 jobs:
   build-appimage:
-    name: Build x86_64 AppImage
+    name: Build x86_64 stable AppImage
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate stable source layout
+        run: |
+          set -euo pipefail
+          test -f src/platform/linux/atspi-x11-detector.c
+          test ! -e src/platform/linux/atspi-x11-detector-v2.c
+          test ! -e src/platform/linux/atspi-x11-detector-v3.c
+          grep -q '^VERSION=2\.3\.0$' Makefile
+
       - name: Install build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
@@ -82,14 +93,15 @@ jobs:
 
       - name: Prepare Ubuntu multiarch include paths
         run: |
+          set -euo pipefail
           multiarch="$(gcc -print-multiarch)"
-
           sudo mkdir -p /usr/lib/glib-2.0 /usr/lib/dbus-1.0
           sudo ln -sfn "/usr/lib/${multiarch}/glib-2.0/include" /usr/lib/glib-2.0/include
           sudo ln -sfn "/usr/lib/${multiarch}/dbus-1.0/include" /usr/lib/dbus-1.0/include
 
-      - name: Build warpd and lightweight GTK3 dialog
+      - name: Build warpd and GTK3 dialog
         run: |
+          set -euo pipefail
           make clean || true
           make -j"$(nproc)" OPENCV_ENABLE=1 DISABLE_WAYLAND=1
 
@@ -106,6 +118,8 @@ jobs:
           ldd "$warpd_bin" | tee warpd-ldd.txt
           grep -q 'libopencv_core' warpd-ldd.txt
           grep -q 'libopencv_imgproc' warpd-ldd.txt
+          grep -q 'libatspi' warpd-ldd.txt
+          grep -q 'libgio-2.0' warpd-ldd.txt
 
           ldd warpd-entry-dialog | tee dialog-ldd.txt
           grep -q 'libgtk-3' dialog-ldd.txt
@@ -118,6 +132,7 @@ jobs:
 
       - name: Create AppDir metadata and Fcitx5 runtime
         run: |
+          set -euo pipefail
           rm -rf AppDir
           mkdir -p \
             AppDir/usr/bin \
@@ -135,9 +150,6 @@ jobs:
           fcitx_module_dest="AppDir/usr/lib/gtk-3.0/3.0.0/immodules/$fcitx_module_name"
           install -m755 "$FCITX_GTK_MODULE" "$fcitx_module_dest"
 
-          # The GTK input module is loaded dynamically, so linuxdeploy does not
-          # reliably discover its private Fcitx5 libraries. Copy its complete
-          # Fcitx5 dependency closure explicitly.
           fcitx_runtime_libs="$(
             ldd "$FCITX_GTK_MODULE" |
               awk '$1 ~ /^libFcitx5/ && $2 == "=>" && $3 ~ /^\// { print $3 }'
@@ -193,7 +205,7 @@ jobs:
           printf '%s\n' "$fcitx_context" \
             > AppDir/usr/lib/gtk-3.0/3.0.0/fcitx-context-name
 
-          cat > AppDir/usr/bin/zenity <<'EOF'
+          cat > AppDir/usr/bin/zenity <<'EOF_ZENITY'
           #!/bin/sh
           set -eu
 
@@ -208,16 +220,13 @@ jobs:
           mkdir -p "$config_dir/gtk-3.0"
           chmod 700 "$runtime_base" "$config_dir" "$config_dir/gtk-3.0" 2>/dev/null || true
 
-          cat > "$config_dir/gtk-3.0/settings.ini" <<'SETTINGS'
+          cat > "$config_dir/gtk-3.0/settings.ini" <<'EOF_SETTINGS'
           [Settings]
           gtk-theme-name=Adwaita
           gtk-application-prefer-dark-theme=1
-          SETTINGS
+          EOF_SETTINGS
 
           sed "s#@APPDIR@#$appdir#g" "$cache_template" > "$cache_file"
-
-          # Text selected by warpd's drag mode is stored in the X11 PRIMARY
-          # selection. Read it directly instead of injecting Ctrl+Insert.
           initial_text="$(xclip -o -selection primary 2>/dev/null || true)"
 
           export WARPD_ENTRY_TEXT="$initial_text"
@@ -230,20 +239,20 @@ jobs:
           export LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           exec "$appdir/usr/libexec/warpd-entry-dialog" "$@"
-          EOF
+          EOF_ZENITY
           chmod +x AppDir/usr/bin/zenity
 
           if [ -f files/warpd.1.gz ]; then
             install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
           fi
 
-          cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF'
+          cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF_HOOK'
           export PATH="$this_dir/usr/bin:${PATH:-/usr/bin:/bin}"
-          EOF
+          EOF_HOOK
 
           echo "FCITX_MODULE_DEST=$fcitx_module_dest" >> "$GITHUB_ENV"
 
-          cat > warpd.desktop <<'EOF'
+          cat > warpd.desktop <<'EOF_DESKTOP'
           [Desktop Entry]
           Type=Application
           Name=warpd
@@ -252,19 +261,20 @@ jobs:
           Icon=warpd
           Terminal=false
           Categories=Utility;Accessibility;
-          EOF
+          EOF_DESKTOP
 
-          cat > warpd.svg <<'EOF'
+          cat > warpd.svg <<'EOF_ICON'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
             <rect width="256" height="256" rx="48" fill="#202124"/>
             <path d="M66 40v142l39-34 27 62 28-13-27-61 51-4z" fill="#f1f3f4" stroke="#202124" stroke-width="10" stroke-linejoin="round"/>
           </svg>
-          EOF
+          EOF_ICON
 
           desktop-file-validate warpd.desktop
 
-      - name: Package AppImage and bundle runtime libraries
+      - name: Package AppImage and checksum
         run: |
+          set -euo pipefail
           wget -q \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
             -O linuxdeploy-x86_64.AppImage
@@ -287,12 +297,17 @@ jobs:
           if [ "$(basename "$generated")" != "$output" ]; then
             mv -- "$generated" "$output"
           fi
-          test -f "$output"
+
           chmod +x "$output"
+          checksum="$output.sha256"
+          sha256sum "$output" > "$checksum"
+
           echo "APPIMAGE_PATH=$output" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=$checksum" >> "$GITHUB_ENV"
 
       - name: Verify bundled runtime
         run: |
+          set -euo pipefail
           rm -rf squashfs-root
           "./$APPIMAGE_PATH" --appimage-extract >/dev/null
 
@@ -313,8 +328,7 @@ jobs:
 
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
-          find squashfs-root -name 'libgtk-3.so*' -print | grep -q .
-          find squashfs-root/usr/lib -maxdepth 1 -name 'libFcitx5GClient.so*' -print | grep -q .
+          find squashfs-root -name 'libFcitx5GClient.so*' -print | grep -q .
 
           runtime_lib_path="$PWD/squashfs-root/usr/lib:$PWD/squashfs-root/usr/lib/x86_64-linux-gnu"
 
@@ -336,35 +350,54 @@ jobs:
             exit 1
           fi
 
+          sha256sum -c "$CHECKSUM_PATH"
           file "$APPIMAGE_PATH"
           du -h "$APPIMAGE_PATH"
 
-      - name: Upload AppImage artifact
+      - name: Upload stable artifacts
         uses: actions/upload-artifact@v4
         with:
           name: warpd-${{ env.VERSION }}-x86_64
-          path: ${{ env.APPIMAGE_PATH }}
+          path: |
+            ${{ env.APPIMAGE_PATH }}
+            ${{ env.CHECKSUM_PATH }}
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub Release
+      - name: Publish stable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="appimage"
-          title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, xclip, complete Fcitx5 GTK3 runtime, dark insert dialog and X11 PRIMARY selection prefill. No IBus, Zenity or WebKitGTK runtime dependency."
+          set -euo pipefail
+          tag="v${VERSION}"
+          title="warpd ${VERSION}"
+
+          notes="$(cat <<EOF_NOTES
+          Stable Linux/X11 x86_64 release.
+
+          Highlights:
+          - AT-SPI-first Smart Hint detection with strict X11 active-window matching.
+          - Automatic OpenCV fallback for incomplete or unavailable accessibility trees.
+          - Root-only browser accessibility results are rejected instead of creating a full-window hint.
+          - Bundled OpenCV, xclip, GTK3 edit dialog and Fcitx5 GTK3 runtime.
+          - X11 PRIMARY selection support for the insert/edit workflow.
+          - SHA-256 checksum included.
+
+          See CHANGELOG.md for the complete 2.3.0 changes.
+          EOF_NOTES
+          )"
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$APPIMAGE_PATH" --clobber
+            gh release upload "$tag" "$APPIMAGE_PATH" "$CHECKSUM_PATH" --clobber
             gh release edit "$tag" \
-              --title "$title" \
-              --notes "$notes" \
-              --prerelease
-          else
-            gh release create "$tag" "$APPIMAGE_PATH" \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes "$notes" \
-              --prerelease
+              --latest
+          else
+            gh release create "$tag" "$APPIMAGE_PATH" "$CHECKSUM_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes" \
+              --latest
           fi

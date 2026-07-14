@@ -1,105 +1,123 @@
-# warpd - Enhanced with Smart Hint
+# warpd 2.3.0
 
-A modal keyboard-driven interface for mouse manipulation, now featuring intelligent UI element detection.
+A keyboard-driven mouse control tool with Smart Hint detection for Linux/X11.
 
-This fork extends the original [warpd](https://github.com/rvaiya/warpd) with **Smart Hint Mode** - an element-based detection system that automatically identifies interactive UI components for precise navigation.
+This fork is based on the original [warpd](https://github.com/rvaiya/warpd) and adds accessibility-aware UI detection, OpenCV fallback, text-selection editing, an x86_64 AppImage build and improved Fcitx5 support.
 
-## Features
+## Stable AppImage
 
-### Core Modes
-- **Hint Mode** (`Alt-Meta-x`) - Generate hints for visible elements
-- **Grid Mode** (`Alt-Meta-g`) - Navigate using quadrant subdivision  
-- **Normal Mode** (`Alt-Meta-c`) - Precise cursor movement with hjkl keys
+Download the latest stable release from:
 
-### 🆕 Smart Hint Mode (`Alt-Meta-f`)
-*Inspired by [Vimium](https://github.com/philc/vimium)*
+- https://github.com/newyorkthink/warpd/releases/latest
 
-Automatically detects interactive UI elements (buttons, links, inputs) and generates hints for direct navigation.
+Release asset:
 
-<p align="center">
-<img src="demo/smart_hint.gif" height="400px"/>
-</p>
-
-**Usage:**
-1. Enter Smart hint Mode (`Alt-Meta-f`) or Enter Normal Mode (`Alt-Meta-c`) then Press `f`
-2. Type the hint label to navigate to any interactive element
-3. Press `Escape` to return to Normal Mode
-
-**Detection Methods:**
-- **Primary**: Platform-native accessibility APIs
-  - Linux: AT-SPI (Assistive Technology Service Provider Interface)
-  - macOS: Accessibility APIs  
-  - Windows: UI Automation APIs
-- **Fallback**: OpenCV-based visual detection for unsupported applications
-
-*Note: Accessibility APIs provide the most accurate detection. OpenCV fallback uses computer vision to detect UI elements when native APIs are unavailable.*
-
-### 🆕 Insert Mode & Text Manipulation
-
-**Insert Mode** (`i` in Normal Mode)
-- Automatically copies any selected text to clipboard
-- Opens a text input dialog pre-filled with clipboard content
-- Edit the text and press Enter to paste, or Escape to cancel
-
-**Workflow Example:**
-1. Select text in any application (with mouse or `v` drag mode)
-2. Press `i` - selected text is copied and shown in dialog
-3. Edit the text
-4. Press Enter - edited text is pasted back
-
-**Copy & Paste** (Vim-like workflow)
-- `y` - Copy selected text (yank)
-- `p` - Paste from clipboard (put)
-- `v` - Enter drag mode to select text
-- `c` - Copy and exit
-- `i` - Copy selection, edit in dialog, and paste
-## Quick Start
-
-### Installation
-
-**Automatic (Recommended):**
-```bash
-curl -fsSL https://raw.githubusercontent.com/atuan26/warpd/master/install.sh | sh
+```text
+warpd-2.3.0-x86_64.AppImage
 ```
 
-**Manual Build:**
+Install it manually:
+
 ```bash
-git clone https://github.com/atuan26/warpd.git
+chmod +x warpd-2.3.0-x86_64.AppImage
+sudo install -m755 warpd-2.3.0-x86_64.AppImage /usr/local/bin/warpd
+```
+
+The AppImage targets X11 and bundles OpenCV, the GTK3 insert dialog, xclip and the Fcitx5 GTK3 runtime.
+
+## Main modes
+
+- **Hint Mode**: `Alt-Meta-x`
+- **Grid Mode**: `Alt-Meta-g`
+- **Normal Mode**: `Alt-Meta-c`
+- **Smart Hint Mode**: `Alt-Meta-f`, or press `f` from Normal Mode
+
+Normal Mode uses the standard warpd movement and click keys. Smart Hint assigns labels to detected UI elements so they can be selected directly from the keyboard.
+
+## Smart Hint detection
+
+Linux/X11 uses the following chain automatically:
+
+1. Enable and query the desktop AT-SPI accessibility service.
+2. Match the X11 active window to its AT-SPI window using PID, process family, title, WM_CLASS and geometry.
+3. Collect real interactive controls such as links, buttons, inputs, menu items and tabs.
+4. Reject root-only accessibility results that expose only the application frame.
+5. Fall back to OpenCV visual detection when the application does not provide a usable accessibility tree.
+
+OpenCV fallback is intentionally capped to avoid covering the screen with excessive labels. Applications do not require individual warpd configuration; unsupported or incomplete accessibility implementations fall back automatically.
+
+## Text selection and editing
+
+From Normal Mode:
+
+- `v`: start drag selection
+- `y`: copy the current selection
+- `p`: paste clipboard contents
+- `c`: copy and leave selection mode
+- `i`: copy the selection, edit it in the bundled dialog, then paste the result
+
+On X11, selected text is read from the PRIMARY selection instead of relying on injected copy shortcuts.
+
+## Source installation
+
+Automatic installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/newyorkthink/warpd/master/install.sh | sh
+```
+
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/newyorkthink/warpd/master/install.sh |
+  WARPD_VERSION=v2.3.0 sh
+```
+
+Manual X11 build with OpenCV:
+
+```bash
+git clone https://github.com/newyorkthink/warpd.git
 cd warpd
-# Install dependencies for your platform (see Dependencies section)
-make && sudo make install
+make -j"$(nproc)" OPENCV_ENABLE=1 DISABLE_WAYLAND=1
+sudo make install
 ```
 
-### Basic Usage
+## Diagnostics
 
-1. Run `warpd`
-2. Use hotkeys to activate modes:
-   - `Alt-Meta-x` - Hint mode
-   - `Alt-Meta-g` - Grid mode  
-   - `Alt-Meta-c` - Normal mode
-3. From Normal mode, press `f` for Smart Hint
-4. Click with `m` (left), `,` (middle), `.` (right)
-5. Press `Escape` to exit
+Run Smart Hint once and save the detector output:
 
-## Contributing
+```bash
+warpd --smart-hint 2>&1 | tee /tmp/warpd-smart-hint.log
+```
 
-Contributions are welcome! Please feel free to:
-- Report issues and bugs
-- Submit feature requests  
-- Create pull requests
-- Improve documentation
+Typical successful paths are:
+
+```text
+Linux: AT-SPI found ... elements
+```
+
+or:
+
+```text
+Linux: AT-SPI detection failed ...
+Linux: OpenCV found ... elements
+```
+
+A fallback is normal for terminals, canvas applications, browser pages without a complete renderer accessibility tree and other custom-drawn interfaces.
 
 ## Limitations
 
-- Smart Hint requires accessibility API support (may not work with all applications)
-- OpenCV fallback provides broader compatibility but may be less precise
-- Wayland support has limitations due to security model
-- Some applications may need accessibility permissions enabled
+- The stable AppImage is Linux/X11 x86_64 only.
+- AT-SPI accuracy depends on the application exposing a useful accessibility tree.
+- OpenCV is broader but cannot always distinguish clickable controls from visually similar shapes.
+- Wayland support remains limited by compositor security restrictions and is not included in the stable AppImage.
+
+## Development
+
+The project keeps one production X11 AT-SPI matcher under `src/platform/linux/atspi-x11-detector.c`. GitHub Actions builds the stable AppImage, verifies bundled libraries, generates a SHA-256 checksum and publishes a versioned GitHub Release.
+
+See [CHANGELOG.md](CHANGELOG.md) and [warpd.1.md](warpd.1.md) for more details.
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
-
----
-
-*For detailed documentation, see the [man page](warpd.1.md).*
+See [LICENSE](LICENSE).

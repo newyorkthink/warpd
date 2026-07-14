@@ -12,3 +12,13 @@ dist/
 *.obj
 *.exe
 *.res
+
+# Local AppImage build output
+AppDir/
+squashfs-root/
+*.AppImage
+*.AppImage.zsync
+*.sha256
+linuxdeploy-*.AppImage
+warpd-entry-dialog
+*-ldd.txt

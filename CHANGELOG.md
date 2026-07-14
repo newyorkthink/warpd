@@ -1,153 +1,32 @@
-# v2.2.0
+# Changelog
 
-- Implement numeric-based hints with label filtering
-- Add insert mode
-- Make cursor appearance configurable
-- Block keyboard input during detection
-- Updates for multiple screen support
-- Make OpenCV detector optional (OPENCV_ENABLE=1)
-- Add STATIC=1 build option for standalone Windows executables
-- Ensure overlay window is always topmost
+## 2.3.0 - 2026-07-14
 
-# v2.1.0
+### Smart Hint
 
-## Windows
-- Fixed Smart Hint to show interactive elements instead of containers
-- Added "Run at startup" option in system tray menu
-- Added `make debug` command for console logging
-- New config: `ui_max_depth` (default: 10) - lower values = faster detection
-- New config: `ui_detection_timeout` (default: 5000ms) - stops detection early
-- Fixed screen selection mode crash (implemented `screen_list`)
+- Added strict X11 active-window matching for AT-SPI using PID, process ancestry, process name, title, WM_CLASS and window geometry.
+- Prevented unrelated applications with similar geometry from being selected as the active AT-SPI window.
+- Enabled the desktop accessibility service automatically before AT-SPI detection.
+- Rejected browser and application results that expose only a single top-level frame.
+- Kept OpenCV as an automatic fallback for terminals, custom-rendered applications and incomplete accessibility trees.
+- Reduced noisy OpenCV results with geometry, edge-density and shape scoring and a maximum of 48 candidates.
 
-# v2.0.0
-- Add Smart Hint Mode - intelligent UI element detection inspired by Vimium
-- Implement platform-native accessibility API detection (AT-SPI, Accessibility APIs, UI Automation)
-- Add OpenCV-based visual detection as fallback for unsupported applications
-- Cross-platform support for element-based navigation (Linux, macOS, Windows)
-- New `f` key binding in Normal Mode to activate Smart Hint
-- Enhanced UI detection with dual-tier approach for maximum compatibility
+### Text editing
 
-# v1.3.5
-- macos: Various input bugfixes
-- macos: Introduce launchd service (the user should no longer run warpd explicitly)
-- macos: Fix multi-user support
-- linux: Merge X/Wayland support into a single binary
-- Improve portrait mode support
-- Make the drag button configurable
-- Fix config key precedence bug
+- Read selected X11 text directly from the PRIMARY selection.
+- Finalized drag selection before opening the editor.
+- Improved editor focus and keyboard-grab reliability.
+- Returned cleanly to Normal Mode when editing is cancelled.
 
-# v1.3.4
- - Fix initial pointer position on wayland
- - Add support middle click support for macos
- - Add support for platform keymaps (non-qwerty layouts)
- - Various bugfixes
+### Packaging
 
-# v1.3.3
- - Fix wayland initialization issue
+- Added the stable Linux/X11 x86_64 AppImage build.
+- Bundled OpenCV, xclip, the GTK3 edit dialog and the Fcitx5 GTK3 runtime.
+- Added bundled-library verification and SHA-256 checksum generation.
+- Changed releases from a rolling prerelease to versioned stable releases.
+- Consolidated the X11 AT-SPI implementation into one production source file.
+- Corrected source-install dependencies and repository URLs.
 
-# v1.3.2
- - Improve config handling (allow for shadowed values to gracefully handle conflicts)
- - Make undo keys in hint based modes configurable
+## 2.2.0
 
-# v1.3.1
-
- - Allow secondary mode selection with --oneshot --normal.
- - Add identifying information to print keys and -q
- - Fix -c
-
-# v1.3.0
-
- - Add more scripting facilities (e.g --oneshot --record)
- - Allow oneshot activation while the daemon is running
- - Fix -q flag
- - Add print key
- - Make hint size specification consistent
- - Add --query
- - Fix dialog occlusion issue (#134)
- - Implement 2 stage hint mode
- - Add history mode
- - Fix modified button presses (#86)
- - Fix macos compilation issues
- - Add an optional visual indicator for normal mode (#121)
- - Check for zxdg_output_manager before adding screens (#116)
- - Make scroll speed configurable (#112)
- - wayland: Make font configurable (#137)
- - wayland: Fix multi-screen support (#135)
- - Various bugfixes
-
-# v1.2.2
-
- - Use XDG compliant config paths + eliminate ~/.config pollution
- - wayland: Lower the required layer_shell version
- - Eliminate hint asymmetry (alters the unit of hint_size)
- - Add dedicated `hint_exit` key (#99)
- - Add --config, and --help
- - Misc bugfixes
-
-# v1.2.1
-
- - Add multi-screen support to wayland
- - Add dedicated hint_exit key (distinct from exit)
-
-# v1.2.0
-
- - Add experimental wayland support
- - Add --hint/--normal/--grid flags
- - Fix missing key up bug
-
-# v1.1.4-beta
-
- - Fix alternate (english) layout support
-
-# v1.1.3-beta
-
- - Hide cursor when scrolling
- - Fix full hint drawing issue caused by switching VTs
-
-# v1.1.2-beta
-
- - Add support for modified button presses
- - Add accelerator key
-
-# v1.1.1-beta
-
- - Add support for shifted hint characters
- - Fix screen boundary issue
- - Limit maximum hint size for multi-screen/resolution setups
- - Change the config list delimiter from comma to space
- - Update man page
- - Misc bugfixes
-
-# v1.1.0-beta
-
- - Add Multiscreen support
- - Make the default colour scheme less appalling
- - Make other modes accessible from grid mode
-
-# v1.0.3-beta
-
- - macos: solicit accessibility whitelisting on initialization (#64)
- - macos: cleanup input handling code + fix freezing (#65)
- - Account for different X maps
-
-# v1.0.2-beta
-
- - macos: Fix sticky key visual indicators
- - Add pointer acceleration (`acceleration`)
- - Add `grid_border_size` and `grid_border_color`
- - Add `hint_oneshot_key`
- - Show cursor in grid mode
-
-# v1.0.0-beta
-
- - Add MacOS support
- - Internal code cleanup
- - Normal movement keys are now continuous rather than discrete.
- - Remove 'normal_' prefix from normal options.
- - Eliminate hint opacity variable in favour of rgba hex values.
- - Eliminate scroll flinging
-
-# v0.0.1
-
-In the beginning there was only darkness.
-
+- Base version used for the Smart Hint and AppImage development cycle.
