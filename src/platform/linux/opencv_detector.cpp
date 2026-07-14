@@ -29,10 +29,14 @@ extern int config_get_int(const char *key);
 
 // Forward declarations for platform-specific screen capture
 #ifdef WARPD_X
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 extern "C" Display *dpy; // From X.c
 static cv::Mat capture_screenshot_x11();
+static int capture_offset_x = 0;
+static int capture_offset_y = 0;
+static const char *capture_scope = "full screen";
 #endif
 
 #ifdef WARPD_WAYLAND
@@ -41,40 +45,130 @@ static cv::Mat capture_screenshot_wayland();
 
 #ifdef WARPD_X
 /**
- * Capture screenshot using X11 and convert to cv::Mat
+ * Convert an XImage into an OpenCV BGRA image.
  */
-static cv::Mat capture_screenshot_x11()
+static cv::Mat ximage_to_mat(XImage *ximg)
 {
-    Window root = DefaultRootWindow(dpy);
-    XWindowAttributes attrs;
-
-    XGetWindowAttributes(dpy, root, &attrs);
-
-    XImage *ximg = XGetImage(dpy, root, 0, 0, attrs.width, attrs.height,
-                              AllPlanes, ZPixmap);
-    if (!ximg) {
+    if (!ximg)
         return cv::Mat();
-    }
 
-    // Create cv::Mat from XImage
-    cv::Mat img(attrs.height, attrs.width, CV_8UC4);
+    cv::Mat img(ximg->height, ximg->width, CV_8UC4);
 
-    for (int y = 0; y < attrs.height; y++) {
-        for (int x = 0; x < attrs.width; x++) {
+    for (int y = 0; y < ximg->height; y++) {
+        for (int x = 0; x < ximg->width; x++) {
             unsigned long pixel = XGetPixel(ximg, x, y);
-
-            // Extract RGBA
             unsigned char b = (pixel & 0xFF);
             unsigned char g = (pixel >> 8) & 0xFF;
             unsigned char r = (pixel >> 16) & 0xFF;
-
-            // Set BGRA
             img.at<cv::Vec4b>(y, x) = cv::Vec4b(b, g, r, 255);
         }
     }
 
-    XDestroyImage(ximg);
     return img;
+}
+
+/**
+ * Read the EWMH active window selected by the window manager.
+ */
+static Window get_active_window_x11()
+{
+    Window root = DefaultRootWindow(dpy);
+    Atom property = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", True);
+    if (property == None)
+        return None;
+
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long item_count = 0;
+    unsigned long bytes_after = 0;
+    unsigned char *data = NULL;
+
+    int status = XGetWindowProperty(
+        dpy, root, property, 0, 1, False, XA_WINDOW,
+        &actual_type, &actual_format, &item_count, &bytes_after, &data);
+
+    Window active = None;
+    if (status == Success && data && item_count == 1 && actual_format == 32)
+        active = *(Window *)data;
+
+    if (data)
+        XFree(data);
+
+    return active;
+}
+
+/**
+ * Capture a specific X11 window and record its absolute screen offset.
+ */
+static cv::Mat capture_window_x11(Window window, int offset_x, int offset_y,
+                                  int width, int height, const char *scope)
+{
+    if (width <= 1 || height <= 1)
+        return cv::Mat();
+
+    XImage *ximg = XGetImage(dpy, window, 0, 0, width, height,
+                             AllPlanes, ZPixmap);
+    if (!ximg)
+        return cv::Mat();
+
+    cv::Mat img = ximage_to_mat(ximg);
+    XDestroyImage(ximg);
+
+    if (!img.empty()) {
+        capture_offset_x = offset_x;
+        capture_offset_y = offset_y;
+        capture_scope = scope;
+    }
+
+    return img;
+}
+
+/**
+ * Capture the current active X11 window. Fall back to the full root window when
+ * the window manager does not expose a valid _NET_ACTIVE_WINDOW.
+ */
+static cv::Mat capture_screenshot_x11()
+{
+    Window root = DefaultRootWindow(dpy);
+    capture_offset_x = 0;
+    capture_offset_y = 0;
+    capture_scope = "full screen";
+
+    Window active = get_active_window_x11();
+    if (active != None && active != root) {
+        XWindowAttributes attrs;
+        if (XGetWindowAttributes(dpy, active, &attrs) &&
+            attrs.map_state == IsViewable && attrs.width > 1 && attrs.height > 1) {
+            int root_x = 0;
+            int root_y = 0;
+            Window child = None;
+
+            if (XTranslateCoordinates(dpy, active, root, 0, 0,
+                                      &root_x, &root_y, &child)) {
+                cv::Mat active_image = capture_window_x11(
+                    active, root_x, root_y, attrs.width, attrs.height,
+                    "active window");
+
+                if (!active_image.empty()) {
+                    fprintf(stderr,
+                            "OpenCV: Capturing active X11 window at (%d,%d), size %dx%d\n",
+                            root_x, root_y, attrs.width, attrs.height);
+                    return active_image;
+                }
+            }
+        }
+    }
+
+    XWindowAttributes root_attrs;
+    if (!XGetWindowAttributes(dpy, root, &root_attrs))
+        return cv::Mat();
+
+    fprintf(stderr,
+            "OpenCV: Active window unavailable; falling back to full screen %dx%d\n",
+            root_attrs.width, root_attrs.height);
+
+    return capture_window_x11(root, 0, 0, root_attrs.width, root_attrs.height,
+                              "full screen");
 }
 #endif
 
@@ -89,7 +183,7 @@ static cv::Mat capture_screenshot_wayland()
     // - wlr-screencopy protocol for wlroots compositors
     // - xdg-desktop-portal for GNOME/KDE
     // - Direct compositor-specific APIs
-    
+
     fprintf(stderr, "WARNING: Wayland OpenCV screen capture not yet implemented\n");
     return cv::Mat();
 }
@@ -172,7 +266,15 @@ struct ui_detection_result *opencv_detect_ui_elements(void)
             return result;
         }
 
-        fprintf(stderr, "\nStep 0: Captured %s screenshot (%dx%d)\n", backend, screenshot.cols, screenshot.rows);
+#ifdef WARPD_X
+        fprintf(stderr,
+                "\nStep 0: Captured %s %s (%dx%d), screen offset=(%d,%d)\n",
+                backend, capture_scope, screenshot.cols, screenshot.rows,
+                capture_offset_x, capture_offset_y);
+#else
+        fprintf(stderr, "\nStep 0: Captured %s screenshot (%dx%d)\n",
+                backend, screenshot.cols, screenshot.rows);
+#endif
 
         // Detect rectangles using OpenCV
         std::vector<cv::Rect> rects = detect_rectangles(screenshot);
@@ -209,10 +311,16 @@ struct ui_detection_result *opencv_detect_ui_elements(void)
             return result;
         }
 
-        // Copy rectangles to result
+        // Copy rectangles to result. OpenCV coordinates are relative to the
+        // captured window, so translate them back to absolute screen positions.
         for (size_t i = 0; i < rects.size(); i++) {
+#ifdef WARPD_X
+            result->elements[i].x = rects[i].x + capture_offset_x;
+            result->elements[i].y = rects[i].y + capture_offset_y;
+#else
             result->elements[i].x = rects[i].x;
             result->elements[i].y = rects[i].y;
+#endif
             result->elements[i].w = rects[i].width;
             result->elements[i].h = rects[i].height;
             result->elements[i].name = strdup("UI Element");
@@ -223,7 +331,13 @@ struct ui_detection_result *opencv_detect_ui_elements(void)
         result->error = 0;
 
         fprintf(stderr, "\n");
-        fprintf(stderr, "✅ SUCCESS: Detected %zu UI elements (%s)\n", result->count, backend);
+#ifdef WARPD_X
+        fprintf(stderr, "✅ SUCCESS: Detected %zu UI elements (%s %s)\n",
+                result->count, backend, capture_scope);
+#else
+        fprintf(stderr, "✅ SUCCESS: Detected %zu UI elements (%s)\n",
+                result->count, backend);
+#endif
         fprintf(stderr, "========================================\n\n");
 
     } catch (const cv::Exception &e) {
