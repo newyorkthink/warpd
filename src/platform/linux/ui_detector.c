@@ -8,6 +8,7 @@
 #include "../../common/detector_orchestrator.h"
 #include "../../common/opencv_detector.h"
 #include "atspi-detector.h"
+#include "atspi-status.h"
 #include "atspi-x11-detector.h"
 #include <at-spi-2.0/atspi/atspi.h>
 #include <glib-2.0/glib.h>
@@ -141,6 +142,13 @@ struct ui_detection_result *linux_detect_ui_elements(void)
 			.min_elements = 0,
 		},
 	};
+
+	/*
+	 * Chromium-family browsers only initialize their Linux accessibility backend
+	 * when the desktop accessibility status is enabled. The org.a11y.Status
+	 * setter also persists the corresponding toolkit-accessibility GSettings key.
+	 */
+	atspi_ensure_global_accessibility();
 
 	return detector_orchestrator_run(strategies, 2, "Linux");
 }
