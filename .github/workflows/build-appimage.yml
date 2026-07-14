@@ -15,6 +15,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-appimage:
     name: Build x86_64 AppImage
@@ -45,7 +49,9 @@ jobs:
             libatspi2.0-dev \
             libdbus-1-dev \
             libglib2.0-dev \
-            libopencv-dev
+            libopencv-dev \
+            zenity \
+            xclip
 
       - name: Prepare Ubuntu multiarch include paths
         run: |
@@ -77,13 +83,23 @@ jobs:
       - name: Create AppDir metadata
         run: |
           rm -rf AppDir
-          mkdir -p AppDir/usr/bin AppDir/usr/share/man/man1
+          mkdir -p \
+            AppDir/usr/bin \
+            AppDir/usr/share/man/man1 \
+            AppDir/apprun-hooks
 
           install -m755 "$WARPD_BIN" AppDir/usr/bin/warpd
+          install -m755 "$(command -v zenity)" AppDir/usr/bin/zenity
+          install -m755 "$(command -v xclip)" AppDir/usr/bin/xclip
 
           if [ -f files/warpd.1.gz ]; then
             install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
           fi
+
+          # Make warpd's popen/system calls resolve the bundled zenity and xclip first.
+          cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF'
+          export PATH="$this_dir/usr/bin:${PATH:-/usr/bin:/bin}"
+          EOF
 
           cat > warpd.desktop <<'EOF'
           [Desktop Entry]
@@ -115,6 +131,8 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --executable AppDir/usr/bin/warpd \
+            --executable AppDir/usr/bin/zenity \
+            --executable AppDir/usr/bin/xclip \
             --desktop-file warpd.desktop \
             --icon-file warpd.svg \
             --output appimage
@@ -130,14 +148,21 @@ jobs:
           chmod +x "$output"
           echo "APPIMAGE_PATH=$output" >> "$GITHUB_ENV"
 
-      - name: Verify bundled OpenCV libraries
+      - name: Verify bundled runtime
         run: |
           rm -rf squashfs-root
           "./$APPIMAGE_PATH" --appimage-extract >/dev/null
 
           test -x squashfs-root/usr/bin/warpd
+          test -x squashfs-root/usr/bin/zenity
+          test -x squashfs-root/usr/bin/xclip
+          test -f squashfs-root/apprun-hooks/00-bundled-tools.sh
+
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
+
+          squashfs-root/usr/bin/zenity --version
+          squashfs-root/usr/bin/xclip -version
 
           file "$APPIMAGE_PATH"
           du -h "$APPIMAGE_PATH"
@@ -157,7 +182,7 @@ jobs:
         run: |
           tag="appimage"
           title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV runtime libraries."
+          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, Zenity and xclip runtime support."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
