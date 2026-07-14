@@ -5,6 +5,13 @@
 
 static GdkSeat *keyboard_seat;
 
+struct focus_state {
+	GtkWidget *dialog;
+	GtkWidget *text_view;
+	guint source_id;
+	int attempts;
+};
+
 static void apply_dark_theme(void)
 {
 	GtkSettings *settings;
@@ -67,14 +74,8 @@ static void apply_dark_theme(void)
 	g_object_unref(provider);
 }
 
-static gboolean editor_key_press(
-    GtkWidget *widget,
-    GdkEventKey *event,
-    gpointer user_data)
+static gboolean handle_editor_key(GdkEventKey *event, GtkDialog *dialog)
 {
-	GtkDialog *dialog = GTK_DIALOG(user_data);
-	(void)widget;
-
 	if (event->keyval == GDK_KEY_Escape) {
 		gtk_dialog_response(dialog, GTK_RESPONSE_CANCEL);
 		return TRUE;
@@ -90,54 +91,63 @@ static gboolean editor_key_press(
 	return FALSE;
 }
 
+static gboolean editor_key_press(
+    GtkWidget *widget,
+    GdkEventKey *event,
+    gpointer user_data)
+{
+	(void)widget;
+	return handle_editor_key(event, GTK_DIALOG(user_data));
+}
+
+/* Runs before the text view and Fcitx5 input context process the key. */
+static gint editor_key_snooper(
+    GtkWidget *grab_widget,
+    GdkEventKey *event,
+    gpointer user_data)
+{
+	(void)grab_widget;
+	return handle_editor_key(event, GTK_DIALOG(user_data));
+}
+
 /*
  * Intercept Escape before GtkTextView/Fcitx5 can consume it as an input-method
- * preedit cancellation key. The regular key-press handler remains as a
- * platform-independent fallback.
+ * preedit cancellation key. The regular handlers remain as fallbacks.
  */
 static GdkFilterReturn raw_key_filter(
     GdkXEvent *native_event,
     GdkEvent *event,
     gpointer user_data)
 {
-	GtkDialog *dialog = GTK_DIALOG(user_data);
 	(void)native_event;
 
 	if (!event || event->type != GDK_KEY_PRESS)
 		return GDK_FILTER_CONTINUE;
 
-	if (event->key.keyval == GDK_KEY_Escape) {
-		gtk_dialog_response(dialog, GTK_RESPONSE_CANCEL);
+	if (handle_editor_key(&event->key, GTK_DIALOG(user_data)))
 		return GDK_FILTER_REMOVE;
-	}
-
-	if ((event->key.state & GDK_CONTROL_MASK) &&
-	    (event->key.keyval == GDK_KEY_Return ||
-	     event->key.keyval == GDK_KEY_KP_Enter)) {
-		gtk_dialog_response(dialog, GTK_RESPONSE_OK);
-		return GDK_FILTER_REMOVE;
-	}
 
 	return GDK_FILTER_CONTINUE;
 }
 
 static gboolean acquire_keyboard_focus(gpointer user_data)
 {
-	GtkWidget *dialog = GTK_WIDGET(user_data);
+	struct focus_state *state = user_data;
 	GdkWindow *window;
 	GdkDisplay *display;
 	GdkGrabStatus status;
 
-	if (!gtk_widget_get_mapped(dialog))
+	if (!gtk_widget_get_mapped(state->dialog))
 		return G_SOURCE_CONTINUE;
 
-	window = gtk_widget_get_window(dialog);
+	window = gtk_widget_get_window(state->dialog);
 	if (!window)
 		return G_SOURCE_CONTINUE;
 
-	gtk_window_present_with_time(GTK_WINDOW(dialog), GDK_CURRENT_TIME);
+	gtk_window_present_with_time(GTK_WINDOW(state->dialog), GDK_CURRENT_TIME);
 	gdk_window_raise(window);
 	gdk_window_focus(window, GDK_CURRENT_TIME);
+	gtk_widget_grab_focus(state->text_view);
 
 	display = gdk_window_get_display(window);
 	keyboard_seat = gdk_display_get_default_seat(display);
@@ -151,11 +161,23 @@ static gboolean acquire_keyboard_focus(gpointer user_data)
 	    NULL,
 	    NULL);
 
-	if (status != GDK_GRAB_SUCCESS) {
-		fprintf(stderr, "WARNING: Could not grab keyboard for text editor: %d\n", status);
-		keyboard_seat = NULL;
+	if (status == GDK_GRAB_SUCCESS) {
+		state->source_id = 0;
+		return G_SOURCE_REMOVE;
 	}
 
+	keyboard_seat = NULL;
+	state->attempts++;
+
+	/* GDK_GRAB_NOT_VIEWABLE is common during the first few map frames. */
+	if (state->attempts < 40)
+		return G_SOURCE_CONTINUE;
+
+	fprintf(
+	    stderr,
+	    "WARNING: Could not grab keyboard for text editor after retries: %d\n",
+	    status);
+	state->source_id = 0;
 	return G_SOURCE_REMOVE;
 }
 
@@ -175,7 +197,7 @@ static gchar *get_initial_text(void)
 
 	/*
 	 * Ask GTK first: it negotiates UTF8_STRING correctly with terminals and
-	 * browsers and is more reliable than xclip's legacy STRING default.
+	 * browsers and preserves multiline selections.
 	 */
 	primary = gtk_clipboard_get(GDK_SELECTION_PRIMARY);
 	primary_text = gtk_clipboard_wait_for_text(primary);
@@ -200,8 +222,10 @@ int main(int argc, char **argv)
 	GtkTextIter start;
 	GtkTextIter end;
 	GtkTextIter cursor;
+	struct focus_state focus_state;
 	gchar *initial_text;
 	gchar *text;
+	guint key_snooper_id;
 	int response;
 
 	if (!gtk_init_check(&argc, &argv)) {
@@ -277,14 +301,25 @@ int main(int argc, char **argv)
 	gtk_box_pack_start(GTK_BOX(content), scrolled, TRUE, TRUE, 6);
 
 	gdk_window_add_filter(NULL, raw_key_filter, dialog);
+	key_snooper_id = gtk_key_snooper_install(editor_key_snooper, dialog);
+
 	gtk_widget_show_all(dialog);
+	gtk_grab_add(dialog);
 	gtk_widget_grab_focus(text_view);
 	gtk_window_present_with_time(GTK_WINDOW(dialog), GDK_CURRENT_TIME);
-	g_idle_add(acquire_keyboard_focus, dialog);
+
+	focus_state.dialog = dialog;
+	focus_state.text_view = text_view;
+	focus_state.attempts = 0;
+	focus_state.source_id = g_timeout_add(50, acquire_keyboard_focus, &focus_state);
 
 	response = gtk_dialog_run(GTK_DIALOG(dialog));
 
+	if (focus_state.source_id)
+		g_source_remove(focus_state.source_id);
 	release_keyboard_focus();
+	gtk_grab_remove(dialog);
+	gtk_key_snooper_remove(key_snooper_id);
 	gdk_window_remove_filter(NULL, raw_key_filter, dialog);
 
 	if (response != GTK_RESPONSE_OK) {
