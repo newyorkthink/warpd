@@ -51,7 +51,34 @@ jobs:
             libglib2.0-dev \
             libopencv-dev \
             libgtk-3-dev \
+            libgtk-3-bin \
             xclip
+
+          fcitx_gtk_package="$(
+            apt-cache search --names-only '^fcitx5.*gtk3' |
+              awk 'NR == 1 { print $1 }'
+          )"
+
+          if [ -z "$fcitx_gtk_package" ]; then
+            echo 'Could not find the Ubuntu Fcitx5 GTK3 frontend package.' >&2
+            apt-cache search --names-only 'fcitx5.*gtk' >&2 || true
+            exit 1
+          fi
+
+          sudo apt-get install -y --no-install-recommends "$fcitx_gtk_package"
+
+          fcitx_gtk_module="$(
+            find /usr/lib \
+              \( -name 'im-fcitx5.so' -o -name 'im-fcitx.so' \) \
+              -print -quit
+          )"
+
+          if [ -z "$fcitx_gtk_module" ]; then
+            echo 'Fcitx5 GTK3 input module was not installed.' >&2
+            exit 1
+          fi
+
+          echo "FCITX_GTK_MODULE=$fcitx_gtk_module" >> "$GITHUB_ENV"
 
       - name: Prepare Ubuntu multiarch include paths
         run: |
@@ -89,21 +116,97 @@ jobs:
           echo "WARPD_BIN=$warpd_bin" >> "$GITHUB_ENV"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Create AppDir metadata
+      - name: Create AppDir metadata and Fcitx5 runtime
         run: |
           rm -rf AppDir
           mkdir -p \
             AppDir/usr/bin \
+            AppDir/usr/libexec \
+            AppDir/usr/lib/gtk-3.0/3.0.0/immodules \
             AppDir/usr/share/man/man1 \
             AppDir/apprun-hooks
 
           install -m755 "$WARPD_BIN" AppDir/usr/bin/warpd
-
-          # warpd invokes the command name "zenity". This lightweight GTK3
-          # replacement implements only the text-entry dialog warpd needs and
-          # avoids Zenity's large WebKitGTK dependency.
-          install -m755 warpd-entry-dialog AppDir/usr/bin/zenity
+          install -m755 warpd-entry-dialog AppDir/usr/libexec/warpd-entry-dialog
           install -m755 "$(command -v xclip)" AppDir/usr/bin/xclip
+
+          fcitx_module_name="$(basename "$FCITX_GTK_MODULE")"
+          fcitx_module_dest="AppDir/usr/lib/gtk-3.0/3.0.0/immodules/$fcitx_module_name"
+          install -m755 "$FCITX_GTK_MODULE" "$fcitx_module_dest"
+
+          gtk_query="$(command -v gtk-query-immodules-3.0 || true)"
+          if [ -z "$gtk_query" ]; then
+            gtk_query="$(find /usr/lib -type f -name gtk-query-immodules-3.0 -print -quit)"
+          fi
+          test -n "$gtk_query"
+
+          cache_template="AppDir/usr/lib/gtk-3.0/3.0.0/immodules.cache.template"
+          "$gtk_query" "$FCITX_GTK_MODULE" > "$cache_template"
+
+          FCITX_MODULE_DEST_REL="usr/lib/gtk-3.0/3.0.0/immodules/$fcitx_module_name" \
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = os.environ["FCITX_GTK_MODULE"]
+          destination = "@APPDIR@/" + os.environ["FCITX_MODULE_DEST_REL"]
+          path = Path("AppDir/usr/lib/gtk-3.0/3.0.0/immodules.cache.template")
+          content = path.read_text()
+
+          if source not in content:
+              raise SystemExit("Fcitx5 module path was not written to GTK cache")
+
+          path.write_text(content.replace(source, destination))
+          PY
+
+          fcitx_context="$(
+            awk -F'"' '
+              /^"/ {
+                quoted_line++
+                if (quoted_line == 2) {
+                  print $2
+                  exit
+                }
+              }
+            ' "$cache_template"
+          )"
+          test -n "$fcitx_context"
+          printf '%s\n' "$fcitx_context" \
+            > AppDir/usr/lib/gtk-3.0/3.0.0/fcitx-context-name
+
+          cat > AppDir/usr/bin/zenity <<'EOF'
+          #!/bin/sh
+          set -eu
+
+          self="$(readlink -f "$0")"
+          appdir="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$self")/../.." && pwd)}"
+          runtime_base="${XDG_RUNTIME_DIR:-/tmp}/warpd-gtk-$(id -u)"
+          config_dir="$runtime_base/config"
+          cache_file="$runtime_base/immodules.cache"
+          cache_template="$appdir/usr/lib/gtk-3.0/3.0.0/immodules.cache.template"
+          context_file="$appdir/usr/lib/gtk-3.0/3.0.0/fcitx-context-name"
+
+          mkdir -p "$config_dir/gtk-3.0"
+          chmod 700 "$runtime_base" "$config_dir" "$config_dir/gtk-3.0" 2>/dev/null || true
+
+          cat > "$config_dir/gtk-3.0/settings.ini" <<'SETTINGS'
+          [Settings]
+          gtk-theme-name=Adwaita
+          gtk-application-prefer-dark-theme=1
+          SETTINGS
+
+          sed "s#@APPDIR@#$appdir#g" "$cache_template" > "$cache_file"
+
+          export XDG_CONFIG_HOME="$config_dir"
+          export GTK_THEME='Adwaita:dark'
+          export GTK_PATH="$appdir/usr/lib/gtk-3.0${GTK_PATH:+:$GTK_PATH}"
+          export GTK_IM_MODULE_FILE="$cache_file"
+          export GTK_IM_MODULE="$(cat "$context_file")"
+          export XMODIFIERS='@im=fcitx'
+
+          exec "$appdir/usr/libexec/warpd-entry-dialog" "$@"
+          EOF
+          chmod +x AppDir/usr/bin/zenity
 
           if [ -f files/warpd.1.gz ]; then
             install -m644 files/warpd.1.gz AppDir/usr/share/man/man1/warpd.1.gz
@@ -112,6 +215,8 @@ jobs:
           cat > AppDir/apprun-hooks/00-bundled-tools.sh <<'EOF'
           export PATH="$this_dir/usr/bin:${PATH:-/usr/bin:/bin}"
           EOF
+
+          echo "FCITX_MODULE_DEST=$fcitx_module_dest" >> "$GITHUB_ENV"
 
           cat > warpd.desktop <<'EOF'
           [Desktop Entry]
@@ -143,8 +248,9 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --executable AppDir/usr/bin/warpd \
-            --executable AppDir/usr/bin/zenity \
+            --executable AppDir/usr/libexec/warpd-entry-dialog \
             --executable AppDir/usr/bin/xclip \
+            --library "$FCITX_MODULE_DEST" \
             --desktop-file warpd.desktop \
             --icon-file warpd.svg \
             --output appimage
@@ -167,16 +273,31 @@ jobs:
 
           test -x squashfs-root/usr/bin/warpd
           test -x squashfs-root/usr/bin/zenity
+          test -x squashfs-root/usr/libexec/warpd-entry-dialog
           test -x squashfs-root/usr/bin/xclip
           test -f squashfs-root/apprun-hooks/00-bundled-tools.sh
+          test -f squashfs-root/usr/lib/gtk-3.0/3.0.0/immodules.cache.template
+          test -f squashfs-root/usr/lib/gtk-3.0/3.0.0/fcitx-context-name
+
+          fcitx_module="$(
+            find squashfs-root/usr/lib/gtk-3.0/3.0.0/immodules \
+              \( -name 'im-fcitx5.so' -o -name 'im-fcitx.so' \) \
+              -print -quit
+          )"
+          test -n "$fcitx_module"
 
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
           find squashfs-root -name 'libgtk-3.so*' -print | grep -q .
 
-          for executable in warpd zenity xclip; do
-            ldd "squashfs-root/usr/bin/$executable" | tee "${executable}-bundled-ldd.txt"
-            if grep -q 'not found' "${executable}-bundled-ldd.txt"; then
+          for executable in \
+            squashfs-root/usr/bin/warpd \
+            squashfs-root/usr/libexec/warpd-entry-dialog \
+            squashfs-root/usr/bin/xclip \
+            "$fcitx_module"; do
+            output_name="$(basename "$executable")-bundled-ldd.txt"
+            ldd "$executable" | tee "$output_name"
+            if grep -q 'not found' "$output_name"; then
               echo "Missing bundled library for $executable" >&2
               exit 1
             fi
@@ -204,7 +325,7 @@ jobs:
         run: |
           tag="appimage"
           title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, xclip and a lightweight GTK3 insert-text dialog. No Zenity or WebKitGTK dependency."
+          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, xclip, Fcitx5 GTK3 input support and a dark lightweight insert-text dialog. No IBus, Zenity or WebKitGTK runtime dependency."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
