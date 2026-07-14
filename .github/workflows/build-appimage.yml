@@ -13,7 +13,7 @@ on:
       - files/**
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-appimage:
@@ -149,3 +149,28 @@ jobs:
           path: ${{ env.APPIMAGE_PATH }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="continuous"
+          title="warpd ${VERSION} AppImage"
+          notes="X11 x86_64 AppImage with bundled OpenCV runtime libraries."
+
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag" --force
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$APPIMAGE_PATH" --clobber
+            gh release edit "$tag" \
+              --title "$title" \
+              --notes "$notes" \
+              --prerelease
+          else
+            gh release create "$tag" "$APPIMAGE_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes" \
+              --prerelease
+          fi
