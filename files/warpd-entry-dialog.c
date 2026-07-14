@@ -1,6 +1,66 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
 
+static void apply_dark_theme(void)
+{
+	GtkSettings *settings;
+	GtkCssProvider *provider;
+	GdkScreen *screen;
+	GError *error = NULL;
+	const char *css =
+	    "dialog, window {"
+	    "  background-color: #171717;"
+	    "  color: #f2f2f2;"
+	    "}"
+	    "label {"
+	    "  color: #f2f2f2;"
+	    "}"
+	    "entry {"
+	    "  background-color: #252525;"
+	    "  color: #ffffff;"
+	    "  caret-color: #ffffff;"
+	    "  border-color: #555555;"
+	    "}"
+	    "button {"
+	    "  background-image: none;"
+	    "  background-color: #303030;"
+	    "  color: #ffffff;"
+	    "  border-color: #555555;"
+	    "}"
+	    "button:hover {"
+	    "  background-color: #3d3d3d;"
+	    "}";
+
+	settings = gtk_settings_get_default();
+	if (settings)
+		g_object_set(
+		    settings,
+		    "gtk-application-prefer-dark-theme",
+		    TRUE,
+		    NULL);
+
+	screen = gdk_screen_get_default();
+	if (!screen)
+		return;
+
+	provider = gtk_css_provider_new();
+	if (!gtk_css_provider_load_from_data(provider, css, -1, &error)) {
+		fprintf(
+		    stderr,
+		    "WARNING: Could not load dark GTK theme: %s\n",
+		    error ? error->message : "unknown error");
+		g_clear_error(&error);
+		g_object_unref(provider);
+		return;
+	}
+
+	gtk_style_context_add_provider_for_screen(
+	    screen,
+	    GTK_STYLE_PROVIDER(provider),
+	    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref(provider);
+}
+
 int main(int argc, char **argv)
 {
 	GtkWidget *dialog;
@@ -14,6 +74,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "ERROR: Could not initialize GTK3 entry dialog.\n");
 		return 1;
 	}
+
+	apply_dark_theme();
 
 	dialog = gtk_dialog_new_with_buttons(
 	    "Insert Text",
