@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static GdkSeat *keyboard_seat;
+
 static void apply_dark_theme(void)
 {
 	GtkSettings *settings;
@@ -88,19 +90,103 @@ static gboolean editor_key_press(
 	return FALSE;
 }
 
+/*
+ * Intercept Escape before GtkTextView/Fcitx5 can consume it as an input-method
+ * preedit cancellation key. The regular key-press handler remains as a
+ * platform-independent fallback.
+ */
+static GdkFilterReturn raw_key_filter(
+    GdkXEvent *native_event,
+    GdkEvent *event,
+    gpointer user_data)
+{
+	GtkDialog *dialog = GTK_DIALOG(user_data);
+	(void)native_event;
+
+	if (!event || event->type != GDK_KEY_PRESS)
+		return GDK_FILTER_CONTINUE;
+
+	if (event->key.keyval == GDK_KEY_Escape) {
+		gtk_dialog_response(dialog, GTK_RESPONSE_CANCEL);
+		return GDK_FILTER_REMOVE;
+	}
+
+	if ((event->key.state & GDK_CONTROL_MASK) &&
+	    (event->key.keyval == GDK_KEY_Return ||
+	     event->key.keyval == GDK_KEY_KP_Enter)) {
+		gtk_dialog_response(dialog, GTK_RESPONSE_OK);
+		return GDK_FILTER_REMOVE;
+	}
+
+	return GDK_FILTER_CONTINUE;
+}
+
+static gboolean acquire_keyboard_focus(gpointer user_data)
+{
+	GtkWidget *dialog = GTK_WIDGET(user_data);
+	GdkWindow *window;
+	GdkDisplay *display;
+	GdkGrabStatus status;
+
+	if (!gtk_widget_get_mapped(dialog))
+		return G_SOURCE_CONTINUE;
+
+	window = gtk_widget_get_window(dialog);
+	if (!window)
+		return G_SOURCE_CONTINUE;
+
+	gtk_window_present_with_time(GTK_WINDOW(dialog), GDK_CURRENT_TIME);
+	gdk_window_raise(window);
+	gdk_window_focus(window, GDK_CURRENT_TIME);
+
+	display = gdk_window_get_display(window);
+	keyboard_seat = gdk_display_get_default_seat(display);
+	status = gdk_seat_grab(
+	    keyboard_seat,
+	    window,
+	    GDK_SEAT_CAPABILITY_KEYBOARD,
+	    FALSE,
+	    NULL,
+	    NULL,
+	    NULL,
+	    NULL);
+
+	if (status != GDK_GRAB_SUCCESS) {
+		fprintf(stderr, "WARNING: Could not grab keyboard for text editor: %d\n", status);
+		keyboard_seat = NULL;
+	}
+
+	return G_SOURCE_REMOVE;
+}
+
+static void release_keyboard_focus(void)
+{
+	if (keyboard_seat) {
+		gdk_seat_ungrab(keyboard_seat);
+		keyboard_seat = NULL;
+	}
+}
+
 static gchar *get_initial_text(void)
 {
 	const char *environment_text = getenv("WARPD_ENTRY_TEXT");
 	GtkClipboard *primary;
 	gchar *primary_text;
 
+	/*
+	 * Ask GTK first: it negotiates UTF8_STRING correctly with terminals and
+	 * browsers and is more reliable than xclip's legacy STRING default.
+	 */
+	primary = gtk_clipboard_get(GDK_SELECTION_PRIMARY);
+	primary_text = gtk_clipboard_wait_for_text(primary);
+	if (primary_text && *primary_text)
+		return primary_text;
+	g_free(primary_text);
+
 	if (environment_text && *environment_text)
 		return g_strdup(environment_text);
 
-	/* GTK negotiates UTF8_STRING correctly with terminals and browsers. */
-	primary = gtk_clipboard_get(GDK_SELECTION_PRIMARY);
-	primary_text = gtk_clipboard_wait_for_text(primary);
-	return primary_text;
+	return NULL;
 }
 
 int main(int argc, char **argv)
@@ -137,6 +223,11 @@ int main(int argc, char **argv)
 
 	gtk_window_set_default_size(GTK_WINDOW(dialog), 760, 480);
 	gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
+	gtk_window_set_accept_focus(GTK_WINDOW(dialog), TRUE);
+	gtk_window_set_focus_on_map(GTK_WINDOW(dialog), TRUE);
+	gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
+	gtk_window_set_skip_taskbar_hint(GTK_WINDOW(dialog), TRUE);
+	gtk_window_set_type_hint(GTK_WINDOW(dialog), GDK_WINDOW_TYPE_HINT_DIALOG);
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
 	content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
@@ -176,14 +267,26 @@ int main(int argc, char **argv)
 	    "key-press-event",
 	    G_CALLBACK(editor_key_press),
 	    dialog);
+	g_signal_connect(
+	    dialog,
+	    "key-press-event",
+	    G_CALLBACK(editor_key_press),
+	    dialog);
 
 	gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 6);
 	gtk_box_pack_start(GTK_BOX(content), scrolled, TRUE, TRUE, 6);
 
+	gdk_window_add_filter(NULL, raw_key_filter, dialog);
 	gtk_widget_show_all(dialog);
 	gtk_widget_grab_focus(text_view);
+	gtk_window_present_with_time(GTK_WINDOW(dialog), GDK_CURRENT_TIME);
+	g_idle_add(acquire_keyboard_focus, dialog);
 
 	response = gtk_dialog_run(GTK_DIALOG(dialog));
+
+	release_keyboard_focus();
+	gdk_window_remove_filter(NULL, raw_key_filter, dialog);
+
 	if (response != GTK_RESPONSE_OK) {
 		gtk_widget_destroy(dialog);
 		return 1;
