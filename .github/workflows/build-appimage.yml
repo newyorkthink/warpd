@@ -158,9 +158,6 @@ jobs:
           title="warpd ${VERSION} AppImage"
           notes="X11 x86_64 AppImage with bundled OpenCV runtime libraries."
 
-          git tag -f "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag" --force
-
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
             gh release edit "$tag" \
