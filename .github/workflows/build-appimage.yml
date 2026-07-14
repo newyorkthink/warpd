@@ -121,6 +121,7 @@ jobs:
           rm -rf AppDir
           mkdir -p \
             AppDir/usr/bin \
+            AppDir/usr/lib \
             AppDir/usr/libexec \
             AppDir/usr/lib/gtk-3.0/3.0.0/immodules \
             AppDir/usr/share/man/man1 \
@@ -133,6 +134,24 @@ jobs:
           fcitx_module_name="$(basename "$FCITX_GTK_MODULE")"
           fcitx_module_dest="AppDir/usr/lib/gtk-3.0/3.0.0/immodules/$fcitx_module_name"
           install -m755 "$FCITX_GTK_MODULE" "$fcitx_module_dest"
+
+          # The GTK input module is loaded dynamically, so linuxdeploy does not
+          # reliably discover its private Fcitx5 libraries. Copy its complete
+          # Fcitx5 dependency closure explicitly.
+          fcitx_runtime_libs="$(
+            ldd "$FCITX_GTK_MODULE" |
+              awk '$1 ~ /^libFcitx5/ && $2 == "=>" && $3 ~ /^\// { print $3 }'
+          )"
+          test -n "$fcitx_runtime_libs"
+
+          while IFS= read -r library; do
+            [ -n "$library" ] || continue
+            install -m755 "$library" "AppDir/usr/lib/$(basename "$library")"
+          done <<EOF_FCITX_LIBS
+          $fcitx_runtime_libs
+          EOF_FCITX_LIBS
+
+          find AppDir/usr/lib -maxdepth 1 -name 'libFcitx5GClient.so*' -print | grep -q .
 
           gtk_query="$(command -v gtk-query-immodules-3.0 || true)"
           if [ -z "$gtk_query" ]; then
@@ -197,12 +216,18 @@ jobs:
 
           sed "s#@APPDIR@#$appdir#g" "$cache_template" > "$cache_file"
 
+          # Text selected by warpd's drag mode is stored in the X11 PRIMARY
+          # selection. Read it directly instead of injecting Ctrl+Insert.
+          initial_text="$(xclip -o -selection primary 2>/dev/null || true)"
+
+          export WARPD_ENTRY_TEXT="$initial_text"
           export XDG_CONFIG_HOME="$config_dir"
           export GTK_THEME='Adwaita:dark'
           export GTK_PATH="$appdir/usr/lib/gtk-3.0${GTK_PATH:+:$GTK_PATH}"
           export GTK_IM_MODULE_FILE="$cache_file"
           export GTK_IM_MODULE="$(cat "$context_file")"
           export XMODIFIERS='@im=fcitx'
+          export LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           exec "$appdir/usr/libexec/warpd-entry-dialog" "$@"
           EOF
@@ -289,6 +314,9 @@ jobs:
           find squashfs-root -name 'libopencv_core.so*' -print | grep -q .
           find squashfs-root -name 'libopencv_imgproc.so*' -print | grep -q .
           find squashfs-root -name 'libgtk-3.so*' -print | grep -q .
+          find squashfs-root/usr/lib -maxdepth 1 -name 'libFcitx5GClient.so*' -print | grep -q .
+
+          runtime_lib_path="$PWD/squashfs-root/usr/lib:$PWD/squashfs-root/usr/lib/x86_64-linux-gnu"
 
           for executable in \
             squashfs-root/usr/bin/warpd \
@@ -296,7 +324,7 @@ jobs:
             squashfs-root/usr/bin/xclip \
             "$fcitx_module"; do
             output_name="$(basename "$executable")-bundled-ldd.txt"
-            ldd "$executable" | tee "$output_name"
+            LD_LIBRARY_PATH="$runtime_lib_path" ldd "$executable" | tee "$output_name"
             if grep -q 'not found' "$output_name"; then
               echo "Missing bundled library for $executable" >&2
               exit 1
@@ -325,7 +353,7 @@ jobs:
         run: |
           tag="appimage"
           title="warpd ${VERSION} AppImage"
-          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, xclip, Fcitx5 GTK3 input support and a dark lightweight insert-text dialog. No IBus, Zenity or WebKitGTK runtime dependency."
+          notes="X11 x86_64 AppImage with bundled OpenCV, AT-SPI, xclip, complete Fcitx5 GTK3 runtime, dark insert dialog and X11 PRIMARY selection prefill. No IBus, Zenity or WebKitGTK runtime dependency."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$APPIMAGE_PATH" --clobber
