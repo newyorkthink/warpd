@@ -155,7 +155,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${VERSION}"
-          title="warpd v${VERSION}"
+          title="warpd ${tag}"
           notes="X11 x86_64 AppImage with bundled OpenCV runtime libraries."
 
           if gh release view "$tag" >/dev/null 2>&1; then
