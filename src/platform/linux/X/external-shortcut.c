@@ -28,10 +28,20 @@ static struct button_hold_state hold_state;
 
 static int translate_smart_hint_activation(struct input_event *ev)
 {
+	struct input_event effective;
+
 	if (!ev || !ev->pressed)
 		return 0;
 
-	if (input_eq(ev, config_get("smart_hint_activation_key")) != 2)
+	/*
+	 * A virtual/uinput keyboard can report incomplete effective modifiers while
+	 * warpd owns its XIGrabDevice. Merge the event state with the modifier
+	 * presses tracked by input.c before matching the activation chord.
+	 */
+	effective = *ev;
+	effective.mods |= x_active_mods;
+
+	if (input_eq(&effective, config_get("smart_hint_activation_key")) != 2)
 		return 0;
 
 	return input_parse_string(ev, config_get("smart_hint")) == 0;
