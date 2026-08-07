@@ -26,6 +26,17 @@ struct button_hold_state {
 
 static struct button_hold_state hold_state;
 
+static int translate_smart_hint_activation(struct input_event *ev)
+{
+	if (!ev || !ev->pressed)
+		return 0;
+
+	if (input_eq(ev, config_get("smart_hint_activation_key")) != 2)
+		return 0;
+
+	return input_parse_string(ev, config_get("smart_hint")) == 0;
+}
+
 static int button_hold_action(int button, struct input_event *action)
 {
 	char buf[64];
@@ -181,6 +192,9 @@ struct input_event *x_input_next_event_passthrough(int timeout)
 	}
 
 	ev = x_input_next_event(timeout);
+	if (translate_smart_hint_activation(ev))
+		return ev;
+
 	if (!ev || !ev->pressed || hold_timeout_us == 0)
 		return ev;
 
