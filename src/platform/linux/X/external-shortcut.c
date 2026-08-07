@@ -126,7 +126,6 @@ static void send_shortcut(const struct input_event *action)
 
 static struct input_event *trigger_button_hold(void)
 {
-	static struct input_event exit_event;
 	struct input_event action = hold_state.action;
 
 	hold_state.active = 0;
@@ -138,13 +137,15 @@ static struct input_event *trigger_button_hold(void)
 	x_input_ungrab_keyboard();
 	send_shortcut(&action);
 
-	external_shortcut_exit_requested = 1;
+	/*
+	 * Keep the current normal-mode session active after the hold shortcut.
+	 * The shortcut has already been delivered and synchronized, so re-grab the
+	 * keyboard and continue with the same warpd pointer instead of returning an
+	 * exit event and forcing the user to press the activation key again.
+	 */
+	x_input_grab_keyboard();
 
-	/* Unwind the active normal-mode loop through its normal exit path. */
-	if (input_parse_string(&exit_event, config_get("exit")) < 0)
-		input_parse_string(&exit_event, "esc");
-
-	return &exit_event;
+	return NULL;
 }
 
 static int pending_wait_timeout(int timeout, uint64_t timeout_us)
