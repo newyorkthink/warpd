@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Validate stable source layout
         run: |
@@ -36,7 +38,59 @@ jobs:
           test -f src/platform/linux/atspi-x11-detector.c
           test ! -e src/platform/linux/atspi-x11-detector-v2.c
           test ! -e src/platform/linux/atspi-x11-detector-v3.c
-          grep -q '^VERSION=2\.3\.0$' Makefile
+          grep -Eq '^VERSION=[0-9]+\.[0-9]+\.[0-9]+$' Makefile
+
+      - name: Determine release version
+        run: |
+          set -euo pipefail
+
+          current_tag="$(
+            git tag --points-at "$GITHUB_SHA" |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              sort -V |
+              tail -n 1 || true
+          )"
+
+          if [ -n "$current_tag" ]; then
+            version="${current_tag#v}"
+          else
+            latest_tag="$(
+              git tag --list 'v*' |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+                sort -V |
+                tail -n 1 || true
+            )"
+
+            if [ -n "$latest_tag" ]; then
+              base_version="${latest_tag#v}"
+            else
+              base_version="$(
+                awk -F= '/^VERSION=/{print $2; exit}' Makefile |
+                  tr -d '[:space:]'
+              )"
+            fi
+
+            if ! printf '%s\n' "$base_version" |
+              grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "Invalid base version: $base_version" >&2
+              exit 1
+            fi
+
+            IFS=. read -r major minor patch <<EOF_VERSION
+          $base_version
+          EOF_VERSION
+            version="${major}.${minor}.$((patch + 1))"
+          fi
+
+          if ! printf '%s\n' "$version" |
+            grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid release version: $version" >&2
+            exit 1
+          fi
+
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
+          echo "Release version: v$version"
 
       - name: Install build dependencies
         run: |
@@ -103,9 +157,9 @@ jobs:
         run: |
           set -euo pipefail
           make clean || true
-          make -j"$(nproc)" OPENCV_ENABLE=1 DISABLE_WAYLAND=1
+          make -j"$(nproc)" OPENCV_ENABLE=1 DISABLE_WAYLAND=1 VERSION="$VERSION"
 
-          warpd_bin="$(find bin -maxdepth 1 -type f -name 'warpd-*' -print -quit)"
+          warpd_bin="$(find bin -maxdepth 1 -type f -name "warpd-${VERSION}" -print -quit)"
           test -n "$warpd_bin"
           test -x "$warpd_bin"
 
@@ -124,11 +178,7 @@ jobs:
           ldd warpd-entry-dialog | tee dialog-ldd.txt
           grep -q 'libgtk-3' dialog-ldd.txt
 
-          version="$(awk -F= '/^VERSION=/{print $2; exit}' Makefile | tr -d '[:space:]')"
-          test -n "$version"
-
           echo "WARPD_BIN=$warpd_bin" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Create AppDir metadata and Fcitx5 runtime
         run: |
@@ -369,7 +419,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="v${VERSION}"
+          tag="$RELEASE_TAG"
           title="warpd ${VERSION}"
 
           notes="$(cat <<EOF_NOTES
@@ -381,9 +431,10 @@ jobs:
           - Root-only browser accessibility results are rejected instead of creating a full-window hint.
           - Bundled OpenCV, xclip, GTK3 edit dialog and Fcitx5 GTK3 runtime.
           - X11 PRIMARY selection support for the insert/edit workflow.
+          - Generic desktop shortcuts can pass through active warpd X11 modes when they are not bound by warpd.
           - SHA-256 checksum included.
 
-          See CHANGELOG.md for the complete 2.3.0 changes.
+          See CHANGELOG.md for project history.
           EOF_NOTES
           )"
 
