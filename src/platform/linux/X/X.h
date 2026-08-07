@@ -57,6 +57,7 @@ struct screen {
 	size_t nr_cached_hints;
 
 	struct box boxes[MAX_BOXES];
+	size_t nr_boxes;
 };
 
 struct monitored_file {
