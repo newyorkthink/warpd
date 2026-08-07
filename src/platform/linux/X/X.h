@@ -57,7 +57,6 @@ struct screen {
 	size_t nr_cached_hints;
 
 	struct box boxes[MAX_BOXES];
-	size_t nr_boxes;
 };
 
 struct monitored_file {
@@ -87,6 +86,7 @@ void x_init();
 void x_input_grab_keyboard();
 void x_input_ungrab_keyboard();
 struct input_event *x_input_next_event(int timeout);
+struct input_event *x_input_next_event_passthrough(int timeout);
 uint8_t x_input_lookup_code(const char *name, int *shifted);
 const char *x_input_lookup_name(uint8_t code, int shifted);
 struct input_event *x_input_wait(struct input_event *events, size_t sz);
