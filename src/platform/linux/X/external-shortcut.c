@@ -1,238 +1,204 @@
 /*
  * warpd - A modal keyboard-driven pointing system.
  *
- * Allow desktop shortcuts that are not consumed by the active warpd mode to
- * escape the XInput keyboard grab. This is intentionally independent of the
- * shortcut, application, input remapper, and physical/virtual input device.
+ * Add tap-hold semantics to normal-mode mouse buttons without depending on a
+ * particular application, shortcut, input remapper, or physical device.
+ *
+ * warpd generates mouse clicks with XTest, which is above evdev/uinput in the
+ * Linux input stack. Low-level remappers therefore cannot observe those
+ * synthetic clicks. Handle the hold decision inside warpd instead: a short
+ * press is returned to normal mode as the original button key, while a long
+ * press sends the configured desktop shortcut after releasing warpd's XInput
+ * keyboard grab.
  */
 
 #include "X.h"
 
 extern int external_shortcut_exit_requested;
 
-static int is_modifier_key(uint8_t code)
+struct button_hold_state {
+	int active;
+	int button;
+	uint64_t started_us;
+	struct input_event source_press;
+	struct input_event action;
+};
+
+static struct button_hold_state hold_state;
+
+static int button_hold_action(int button, struct input_event *action)
 {
-	KeySym sym = XKeycodeToKeysym(dpy, code, 0);
+	char buf[64];
+	char *tok;
+	int idx = 1;
 
-	return IsModifierKey(sym);
-}
+	snprintf(buf, sizeof buf, "%s", config_get("button_hold_keys"));
 
-static int is_warpd_binding(struct input_event *ev)
-{
-	struct config_entry *ent;
-
-	for (ent = config; ent; ent = ent->next) {
-		char buf[sizeof ent->value];
-		char *tok;
-
-		if (!ent->whitelisted ||
-		    (ent->type != OPT_KEY && ent->type != OPT_BUTTON) ||
-		    !strcmp(ent->value, "unbind"))
+	for (tok = strtok(buf, " "); tok; tok = strtok(NULL, " "), idx++) {
+		if (idx != button)
 			continue;
 
-		snprintf(buf, sizeof buf, "%s", ent->value);
+		if (!strcmp(tok, "unbind"))
+			return 0;
 
-		for (tok = strtok(buf, " "); tok; tok = strtok(NULL, " ")) {
-			int match = input_eq(ev, tok);
-
-			if ((ent->type == OPT_KEY && match == 2) ||
-			    (ent->type == OPT_BUTTON && match != 0))
-				return 1;
+		if (input_parse_string(action, tok) < 0) {
+			fprintf(stderr,
+				"ERROR: invalid button hold shortcut: %s\n", tok);
+			return 0;
 		}
+
+		return 1;
 	}
 
 	return 0;
 }
 
-static int is_standalone_shortcut_key(uint8_t code)
+static void send_modifier(uint8_t mod, int pressed)
 {
-	KeySym sym = XKeycodeToKeysym(dpy, code, 0);
+	KeySym sym = NoSymbol;
 
-	if (IsFunctionKey(sym) || IsMiscFunctionKey(sym))
-		return 1;
-
-	/*
-	 * XF86 multimedia/system keys use the 0x1008FFxx keysym range.
-	 * Keep this numeric check local so the build does not gain another header
-	 * dependency merely for XF86 key names.
-	 */
-	return sym >= 0x1008FF00 && sym <= 0x1008FFFF;
-}
-
-static uint8_t effective_mods(struct input_event *ev)
-{
-	/*
-	 * Some virtual/uinput keyboards report incomplete effective modifiers on
-	 * the final key event while warpd owns the XInput device. warpd already
-	 * tracks modifier key presses independently in x_active_mods, so merge the
-	 * two views instead of trusting either one alone.
-	 */
-	return ev->mods | x_active_mods;
-}
-
-static int should_passthrough(struct input_event *ev)
-{
-	struct input_event effective;
-
-	if (!ev || !ev->pressed)
-		return 0;
-
-	/* A modifier press is only the beginning of a chord, not the shortcut. */
-	if (is_modifier_key(ev->code))
-		return 0;
-
-	effective = *ev;
-	effective.mods = effective_mods(ev);
-
-	/* Never steal a key that the current warpd mode is configured to use. */
-	if (is_warpd_binding(&effective))
-		return 0;
-
-	/*
-	 * Modified chords are desktop-shortcut candidates. Unmodified function,
-	 * system, and multimedia keys are also safe candidates. Plain text stays
-	 * inside warpd because hint modes intentionally consume arbitrary text.
-	 */
-	return effective.mods != 0 || is_standalone_shortcut_key(ev->code);
-}
-
-static void modifier_keysyms(uint8_t mod, KeySym *left, KeySym *right)
-{
 	switch (mod) {
 	case PLATFORM_MOD_CONTROL:
-		*left = XK_Control_L;
-		*right = XK_Control_R;
+		sym = XK_Control_L;
 		break;
 	case PLATFORM_MOD_SHIFT:
-		*left = XK_Shift_L;
-		*right = XK_Shift_R;
+		sym = XK_Shift_L;
 		break;
 	case PLATFORM_MOD_ALT:
-		*left = XK_Alt_L;
-		*right = XK_Alt_R;
+		sym = XK_Alt_L;
 		break;
 	case PLATFORM_MOD_META:
-		*left = XK_Super_L;
-		*right = XK_Super_R;
-		break;
-	default:
-		*left = NoSymbol;
-		*right = NoSymbol;
+		sym = XK_Super_L;
 		break;
 	}
+
+	if (sym != NoSymbol)
+		XTestFakeKeyEvent(
+		    dpy, XKeysymToKeycode(dpy, sym), pressed, CurrentTime);
 }
 
-static int keycode_is_down(const char keymap[32], KeyCode code)
+static void send_shortcut(const struct input_event *action)
 {
-	if (!code)
-		return 0;
+	if (action->mods & PLATFORM_MOD_CONTROL)
+		send_modifier(PLATFORM_MOD_CONTROL, True);
+	if (action->mods & PLATFORM_MOD_SHIFT)
+		send_modifier(PLATFORM_MOD_SHIFT, True);
+	if (action->mods & PLATFORM_MOD_ALT)
+		send_modifier(PLATFORM_MOD_ALT, True);
+	if (action->mods & PLATFORM_MOD_META)
+		send_modifier(PLATFORM_MOD_META, True);
 
-	return 0x01 & keymap[code / 8] >> (code % 8);
-}
+	XTestFakeKeyEvent(dpy, action->code, True, CurrentTime);
+	XTestFakeKeyEvent(dpy, action->code, False, CurrentTime);
 
-static int modifier_is_down(const char keymap[32], uint8_t mod)
-{
-	KeySym left_sym;
-	KeySym right_sym;
-	KeyCode left;
-	KeyCode right;
-
-	modifier_keysyms(mod, &left_sym, &right_sym);
-	if (left_sym == NoSymbol)
-		return 0;
-
-	left = XKeysymToKeycode(dpy, left_sym);
-	right = XKeysymToKeycode(dpy, right_sym);
-
-	return keycode_is_down(keymap, left) || keycode_is_down(keymap, right);
-}
-
-static KeyCode modifier_replay_keycode(uint8_t mod)
-{
-	KeySym left_sym;
-	KeySym right_sym;
-
-	modifier_keysyms(mod, &left_sym, &right_sym);
-	(void)right_sym;
-
-	return left_sym == NoSymbol ? 0 : XKeysymToKeycode(dpy, left_sym);
-}
-
-static void replay_shortcut_and_exit(struct input_event *ev)
-{
-	static const uint8_t modifier_order[] = {
-		PLATFORM_MOD_CONTROL,
-		PLATFORM_MOD_SHIFT,
-		PLATFORM_MOD_ALT,
-		PLATFORM_MOD_META,
-	};
-	KeyCode synthetic_modifiers[sizeof modifier_order];
-	size_t nr_synthetic_modifiers = 0;
-	uint8_t mods = effective_mods(ev);
-	uint8_t code = ev->code;
-	char keymap[32];
-	size_t i;
-
-	x_input_ungrab_keyboard();
-
-	/*
-	 * XIGrabDevice can detach a slave keyboard from its master while warpd owns
-	 * it. After the grab is released, a virtual/remapped keyboard's modifier
-	 * state is therefore not guaranteed to be visible to the desktop at the
-	 * exact instant the final shortcut key is replayed.
-	 *
-	 * Query the real X11 key state after ungrabbing and synthesize only the
-	 * modifiers that are actually missing. This preserves physical modifiers,
-	 * works with virtual/uinput keyboards, and does not depend on any specific
-	 * shortcut or application.
-	 */
-	XQueryKeymap(dpy, keymap);
-
-	for (i = 0; i < sizeof modifier_order; i++) {
-		uint8_t mod = modifier_order[i];
-		KeyCode modifier_code;
-
-		if (!(mods & mod) || modifier_is_down(keymap, mod))
-			continue;
-
-		modifier_code = modifier_replay_keycode(mod);
-		if (!modifier_code)
-			continue;
-
-		XTestFakeKeyEvent(dpy, modifier_code, True, CurrentTime);
-		synthetic_modifiers[nr_synthetic_modifiers++] = modifier_code;
-	}
-
-	/* Ensure a fresh key press even if the grabbed source still reports it down. */
-	XTestFakeKeyEvent(dpy, code, False, CurrentTime);
-	XTestFakeKeyEvent(dpy, code, True, CurrentTime);
-	XTestFakeKeyEvent(dpy, code, False, CurrentTime);
-
-	while (nr_synthetic_modifiers) {
-		KeyCode modifier_code =
-		    synthetic_modifiers[--nr_synthetic_modifiers];
-		XTestFakeKeyEvent(dpy, modifier_code, False, CurrentTime);
-	}
+	if (action->mods & PLATFORM_MOD_META)
+		send_modifier(PLATFORM_MOD_META, False);
+	if (action->mods & PLATFORM_MOD_ALT)
+		send_modifier(PLATFORM_MOD_ALT, False);
+	if (action->mods & PLATFORM_MOD_SHIFT)
+		send_modifier(PLATFORM_MOD_SHIFT, False);
+	if (action->mods & PLATFORM_MOD_CONTROL)
+		send_modifier(PLATFORM_MOD_CONTROL, False);
 
 	XSync(dpy, False);
+}
+
+static struct input_event *trigger_button_hold(void)
+{
+	static struct input_event exit_event;
+	struct input_event action = hold_state.action;
+
+	hold_state.active = 0;
+
+	/*
+	 * The shortcut must be emitted after releasing the XIGrabDevice grabs;
+	 * otherwise warpd would immediately consume its own synthetic key events.
+	 */
+	x_input_ungrab_keyboard();
+	send_shortcut(&action);
 
 	external_shortcut_exit_requested = 1;
 
-	/*
-	 * Return warpd's configured exit event so whichever sub-mode currently
-	 * owns the input loop unwinds normally. mode_loop then sees the external
-	 * shortcut flag and ends the whole active session.
-	 */
-	if (input_parse_string(ev, config_get("exit")) < 0)
-		input_parse_string(ev, "esc");
+	/* Unwind the active normal-mode loop through its normal exit path. */
+	if (input_parse_string(&exit_event, config_get("exit")) < 0)
+		input_parse_string(&exit_event, "esc");
+
+	return &exit_event;
+}
+
+static int pending_wait_timeout(int timeout, uint64_t timeout_us)
+{
+	uint64_t elapsed_us = get_time_us() - hold_state.started_us;
+	uint64_t remaining_us;
+	uint64_t remaining_ms;
+
+	if (elapsed_us >= timeout_us)
+		return 1;
+
+	remaining_us = timeout_us - elapsed_us;
+	remaining_ms = (remaining_us + 999) / 1000;
+	if (remaining_ms == 0)
+		remaining_ms = 1;
+
+	if (timeout == 0 || remaining_ms < (uint64_t)timeout)
+		return (int)remaining_ms;
+
+	return timeout;
 }
 
 struct input_event *x_input_next_event_passthrough(int timeout)
 {
-	struct input_event *ev = x_input_next_event(timeout);
+	static struct input_event tap_event;
+	struct input_event *ev;
+	int hold_ms = config_get_int("button_hold_timeout");
+	uint64_t hold_timeout_us = hold_ms > 0 ? (uint64_t)hold_ms * 1000 : 0;
 
-	if (should_passthrough(ev))
-		replay_shortcut_and_exit(ev);
+	if (hold_state.active) {
+		int wait_timeout =
+		    pending_wait_timeout(timeout, hold_timeout_us);
+
+		ev = x_input_next_event(wait_timeout);
+
+		if (ev && !ev->pressed &&
+		    ev->code == hold_state.source_press.code) {
+			/*
+			 * Released before the threshold: reproduce the original button
+			 * key press now, so normal mode performs one ordinary click.
+			 */
+			tap_event = hold_state.source_press;
+			tap_event.pressed = 1;
+			hold_state.active = 0;
+			return &tap_event;
+		}
+
+		if (ev)
+			return ev;
+
+		if (get_time_us() - hold_state.started_us >= hold_timeout_us)
+			return trigger_button_hold();
+
+		return NULL;
+	}
+
+	ev = x_input_next_event(timeout);
+	if (!ev || !ev->pressed || hold_timeout_us == 0)
+		return ev;
+
+	/*
+	 * config_input_match respects the current mode whitelist. Therefore this
+	 * only intercepts normal-mode "buttons" bindings and leaves hint/grid/etc.
+	 * input untouched.
+	 */
+	int button = config_input_match(ev, "buttons");
+	if (button && button_hold_action(button, &hold_state.action)) {
+		hold_state.active = 1;
+		hold_state.button = button;
+		hold_state.started_us = get_time_us();
+		hold_state.source_press = *ev;
+
+		/* Suppress the immediate click until tap versus hold is known. */
+		return NULL;
+	}
 
 	return ev;
 }

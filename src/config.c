@@ -37,6 +37,8 @@ static struct {
 	{ "accelerator", "a", "Increase the acceleration of the pointer while held.", OPT_KEY },
 	{ "decelerator", "d", "Decrease the speed of the pointer while held.", OPT_KEY },
 	{ "buttons", "m , .",  "A space separated list of mouse buttons (2 is middle click).", OPT_BUTTON },
+	{ "button_hold_timeout", "200", "Milliseconds before a configured normal-mode mouse button hold action fires.", OPT_INT },
+	{ "button_hold_keys", "unbind unbind unbind", "Space separated hold shortcuts matching the buttons list; use unbind to keep a button click-only.", OPT_STRING },
 	{ "drag_button", "1", "The mouse buttton used for dragging.", OPT_INT },
 	{ "oneshot_buttons", "n - /", "Oneshot mouse buttons (deactivate on click).", OPT_BUTTON },
 
