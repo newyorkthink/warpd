@@ -10,8 +10,6 @@
 
 extern int external_shortcut_exit_requested;
 
-struct input_event *__real_x_input_next_event(int timeout);
-
 static int is_modifier_key(uint8_t code)
 {
 	KeySym sym = XKeycodeToKeysym(dpy, code, 0);
@@ -229,9 +227,9 @@ static void replay_shortcut_and_exit(struct input_event *ev)
 		input_parse_string(ev, "esc");
 }
 
-struct input_event *__wrap_x_input_next_event(int timeout)
+struct input_event *x_input_next_event_passthrough(int timeout)
 {
-	struct input_event *ev = __real_x_input_next_event(timeout);
+	struct input_event *ev = x_input_next_event(timeout);
 
 	if (should_passthrough(ev))
 		replay_shortcut_and_exit(ev);
