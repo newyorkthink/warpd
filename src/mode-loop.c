@@ -1,10 +1,20 @@
 #include "warpd.h"
 
+/*
+ * X11 may forward an external desktop shortcut while warpd owns the keyboard.
+ * The active sub-mode returns first; this flag then terminates the whole mode
+ * session instead of dropping back into Normal Mode and grabbing the keyboard
+ * again.
+ */
+int external_shortcut_exit_requested = 0;
+
 int mode_loop(int initial_mode, int oneshot, int record_history)
 {
 	int mode = initial_mode;
 	int rc = 0;
 	struct input_event *ev = NULL;
+
+	external_shortcut_exit_requested = 0;
 
 	while (1) {
 		int btn = 0;
@@ -65,6 +75,12 @@ int mode_loop(int initial_mode, int oneshot, int record_history)
 			mode = MODE_NORMAL;
 			ev = NULL;
 			break;
+		}
+
+		if (external_shortcut_exit_requested) {
+			external_shortcut_exit_requested = 0;
+			rc = 0;
+			goto exit;
 		}
 
 		if (oneshot && (initial_mode != MODE_NORMAL || (btn = config_input_match(ev, "buttons")))) {

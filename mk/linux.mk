@@ -33,6 +33,7 @@ ifndef DISABLE_X
 		-DWARPD_X=1
 
 	CFILES+=$(shell find src/platform/linux/X/*.c)
+	LDFLAGS+=-Wl,--wrap=x_input_next_event
 endif
 
 OBJECTS=$(CFILES:.c=.o) $(CXXFILES:.cpp=.o)
